@@ -194,6 +194,7 @@ export class InputHandler {
   private mouseupListener: ((e: MouseEvent) => void) | null = null;
   private mousemoveListener: ((e: MouseEvent) => void) | null = null;
   private wheelListener: ((e: WheelEvent) => void) | null = null;
+  private blurListener: (() => void) | null = null;
   private isComposing = false;
   private isDisposed = false;
   private mouseButtonsPressed = 0; // Track which buttons are pressed for motion reporting
@@ -302,7 +303,14 @@ export class InputHandler {
     this.container.addEventListener('mousedown', this.mousedownListener);
 
     this.mouseupListener = this.handleMouseUp.bind(this);
-    this.container.addEventListener('mouseup', this.mouseupListener);
+    document.addEventListener('mouseup', this.mouseupListener);
+
+    // Clear pressed button state when the window loses focus, since any
+    // in-flight mouseup will never fire.
+    this.blurListener = () => {
+      this.mouseButtonsPressed = 0;
+    };
+    window.addEventListener('blur', this.blurListener);
 
     this.mousemoveListener = this.handleMouseMove.bind(this);
     this.container.addEventListener('mousemove', this.mousemoveListener);
@@ -845,13 +853,16 @@ export class InputHandler {
     if (this.isDisposed) return;
     if (!this.mouseConfig?.hasMouseTracking()) return;
 
-    const cell = this.pixelToCell(event);
-    if (!cell) return;
-
     const button = event.button;
 
-    // Clear pressed button
+    // Always clear pressed button, even if the cursor is outside the
+    // canvas (pixelToCell returns null).  This prevents mouseButtonsPressed
+    // from getting stuck when the mouseup fires on document after the
+    // cursor left the container.
     this.mouseButtonsPressed &= ~(1 << button);
+
+    const cell = this.pixelToCell(event);
+    if (!cell) return;
 
     this.sendMouseEvent(button, cell.col, cell.row, true, event);
   }
@@ -1080,7 +1091,7 @@ export class InputHandler {
     }
 
     if (this.mouseupListener) {
-      this.container.removeEventListener('mouseup', this.mouseupListener);
+      document.removeEventListener('mouseup', this.mouseupListener);
       this.mouseupListener = null;
     }
 
@@ -1092,6 +1103,11 @@ export class InputHandler {
     if (this.wheelListener) {
       this.container.removeEventListener('wheel', this.wheelListener);
       this.wheelListener = null;
+    }
+
+    if (this.blurListener) {
+      window.removeEventListener('blur', this.blurListener);
+      this.blurListener = null;
     }
 
     this.isDisposed = true;
