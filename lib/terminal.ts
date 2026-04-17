@@ -65,6 +65,9 @@ export class Terminal implements ITerminalCore {
   // Components (created on open())
   private ghostty?: Ghostty;
   public wasmTerm?: GhosttyTerminal; // Made public for link providers
+  /** Whether this Terminal owns (and must free) its wasmTerm. False when
+   *  wasmTerm was passed in via ITerminalOptions.wasmTerm. */
+  private ownsWasmTerm: boolean = true;
   public renderer?: CanvasRenderer; // Made public for FitAddon
   private inputHandler?: InputHandler;
   private selectionManager?: SelectionManager;
@@ -137,10 +140,18 @@ export class Terminal implements ITerminalCore {
     // Use provided Ghostty instance (for test isolation) or get module-level instance
     this.ghostty = options.ghostty ?? getGhostty();
 
+    // Adopt an injected wasm terminal if provided. The caller retains ownership
+    // (cleanupComponents() will skip free(), reset() throws). When cols/rows
+    // are not explicitly set, inherit them from the injected terminal.
+    if (options.wasmTerm) {
+      this.wasmTerm = options.wasmTerm;
+      this.ownsWasmTerm = false;
+    }
+
     // Create base options object with all defaults (excluding ghostty)
     const baseOptions = {
-      cols: options.cols ?? 80,
-      rows: options.rows ?? 24,
+      cols: options.cols ?? options.wasmTerm?.cols ?? 80,
+      rows: options.rows ?? options.wasmTerm?.rows ?? 24,
       cursorBlink: options.cursorBlink ?? false,
       cursorStyle: options.cursorStyle ?? 'block',
       theme: options.theme ?? {},
@@ -369,9 +380,22 @@ export class Terminal implements ITerminalCore {
       parent.setAttribute('aria-label', 'Terminal input');
       parent.setAttribute('aria-multiline', 'true');
 
-      // Create WASM terminal with current dimensions and config
-      const config = this.buildWasmConfig();
-      this.wasmTerm = this.ghostty!.createTerminal(this.cols, this.rows, config);
+      // Create WASM terminal with current dimensions and config.
+      //
+      // If a wasmTerm was injected via ITerminalOptions.wasmTerm, adopt it
+      // instead of allocating a fresh one. The resize-if-differs branch
+      // below only runs when the caller explicitly set cols/rows in the
+      // options alongside wasmTerm — the constructor's cols/rows default
+      // to the injected terminal's own dims, so in the common case the
+      // check is a no-op.
+      if (this.wasmTerm) {
+        if (this.wasmTerm.cols !== this.cols || this.wasmTerm.rows !== this.rows) {
+          this.wasmTerm.resize(this.cols, this.rows);
+        }
+      } else {
+        const config = this.buildWasmConfig();
+        this.wasmTerm = this.ghostty!.createTerminal(this.cols, this.rows, config);
+      }
 
       // Create canvas element
       this.canvas = document.createElement('canvas');
@@ -725,9 +749,26 @@ export class Terminal implements ITerminalCore {
 
   /**
    * Reset terminal state
+   *
+   * Frees the current wasm terminal and allocates a fresh one with the
+   * same dimensions and config. This is the xterm.js-compatible RIS-style
+   * full reset — user code calls `term.reset()` to wipe state.
+   *
+   * Throws when the wasm terminal was injected via ITerminalOptions.wasmTerm:
+   * reset() would have to free a buffer the caller owns, which silently
+   * breaks the ownership contract. Callers wanting to reset an externally
+   * owned wasmTerm should free() + createTerminal() + construct a new
+   * Terminal wrapper themselves.
    */
   reset(): void {
     this.assertOpen();
+
+    if (!this.ownsWasmTerm) {
+      throw new Error(
+        'Terminal.reset() is not supported when a wasmTerm was injected via ' +
+          'ITerminalOptions.wasmTerm. The caller owns the wasmTerm lifecycle.'
+      );
+    }
 
     // Free old WASM terminal and create new one
     if (this.wasmTerm) {
@@ -1276,9 +1317,13 @@ export class Terminal implements ITerminalCore {
       this.linkDetector = undefined;
     }
 
-    // Free WASM terminal
+    // Free WASM terminal — only if we own it. Injected wasmTerms
+    // (ITerminalOptions.wasmTerm) belong to the caller; they keep them alive
+    // across view lifetimes and are responsible for calling free() themselves.
     if (this.wasmTerm) {
-      this.wasmTerm.free();
+      if (this.ownsWasmTerm) {
+        this.wasmTerm.free();
+      }
       this.wasmTerm = undefined;
     }
 
