@@ -10,7 +10,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import type { Terminal } from './terminal';
+import { Ghostty } from './ghostty';
+import { Terminal } from './terminal';
 import { createIsolatedTerminal } from './test-helpers';
 
 /**
@@ -3046,5 +3047,181 @@ describe('Synchronous open()', () => {
 
     wasmTerm2.free();
     term1.dispose();
+  });
+});
+
+describe('Injected wasmTerm (ITerminalOptions.wasmTerm)', () => {
+  let container: HTMLElement;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null!;
+    }
+  });
+
+  test('adopts injected wasmTerm without allocating a new one', async () => {
+    const ghostty = await Ghostty.load();
+    const wasmTerm = ghostty.createTerminal(80, 24);
+
+    const term = new Terminal({ ghostty, wasmTerm });
+    term.open(container!);
+
+    // The Terminal should have adopted the exact wasmTerm we passed in,
+    // not constructed a replacement.
+    expect(term.wasmTerm).toBe(wasmTerm);
+
+    term.dispose();
+    wasmTerm.free();
+  });
+
+  test('preserves buffer contents written before injection', async () => {
+    const ghostty = await Ghostty.load();
+    const wasmTerm = ghostty.createTerminal(80, 24);
+    wasmTerm.write('Hello, injected world!');
+
+    const term = new Terminal({ ghostty, wasmTerm });
+    term.open(container!);
+
+    const line = term.wasmTerm!.getLine(0);
+    expect(line).not.toBeNull();
+    expect(line![0].codepoint).toBe('H'.codePointAt(0)!);
+    expect(line![7].codepoint).toBe('i'.codePointAt(0)!);
+
+    term.dispose();
+    wasmTerm.free();
+  });
+
+  test('dispose() does not free injected wasmTerm', async () => {
+    const ghostty = await Ghostty.load();
+    const wasmTerm = ghostty.createTerminal(80, 24);
+    wasmTerm.write('survive me');
+
+    const term = new Terminal({ ghostty, wasmTerm });
+    term.open(container!);
+    term.dispose();
+
+    // wasmTerm must still be usable after the Terminal wrapper is gone.
+    expect(() => wasmTerm.write(' still here')).not.toThrow();
+    const line = wasmTerm.getLine(0);
+    expect(line).not.toBeNull();
+    expect(line![0].codepoint).toBe('s'.codePointAt(0)!);
+
+    wasmTerm.free();
+  });
+
+  test('state persists across dispose + new wrapper (the reattach case)', async () => {
+    const ghostty = await Ghostty.load();
+    const wasmTerm = ghostty.createTerminal(80, 24);
+    wasmTerm.write('persistent state');
+
+    // First wrapper: mount, then tear down the view.
+    const term1 = new Terminal({ ghostty, wasmTerm });
+    term1.open(container!);
+    term1.dispose();
+
+    // Second wrapper on the same wasmTerm: should see the original buffer.
+    const container2 = document.createElement('div');
+    document.body.appendChild(container2);
+    const term2 = new Terminal({ ghostty, wasmTerm });
+    term2.open(container2);
+
+    const line = term2.wasmTerm!.getLine(0);
+    expect(line).not.toBeNull();
+    expect(line![0].codepoint).toBe('p'.codePointAt(0)!);
+    expect(line![11].codepoint).toBe('s'.codePointAt(0)!); // "state"
+
+    term2.dispose();
+    container2.remove();
+    wasmTerm.free();
+  });
+
+  test('writes through the Terminal wrapper land in the injected wasmTerm', async () => {
+    const ghostty = await Ghostty.load();
+    const wasmTerm = ghostty.createTerminal(80, 24);
+
+    const term = new Terminal({ ghostty, wasmTerm });
+    term.open(container!);
+    term.write('from wrapper');
+
+    // Same buffer — read directly from the wasmTerm reference the caller holds.
+    const line = wasmTerm.getLine(0);
+    expect(line).not.toBeNull();
+    expect(line![0].codepoint).toBe('f'.codePointAt(0)!);
+
+    term.dispose();
+    wasmTerm.free();
+  });
+
+  test('reset() throws when wasmTerm was injected', async () => {
+    const ghostty = await Ghostty.load();
+    const wasmTerm = ghostty.createTerminal(80, 24);
+
+    const term = new Terminal({ ghostty, wasmTerm });
+    term.open(container!);
+
+    expect(() => term.reset()).toThrow(/not supported when a wasmTerm was injected/);
+
+    // wasmTerm should still be alive after the failed reset.
+    expect(() => wasmTerm.write('still alive')).not.toThrow();
+
+    term.dispose();
+    wasmTerm.free();
+  });
+
+  test('defaults cols/rows to injected wasmTerm dimensions', async () => {
+    const ghostty = await Ghostty.load();
+    const wasmTerm = ghostty.createTerminal(132, 43);
+
+    const term = new Terminal({ ghostty, wasmTerm });
+    expect(term.cols).toBe(132);
+    expect(term.rows).toBe(43);
+
+    term.open(container!);
+    // wasmTerm dimensions stay put when they match.
+    expect(wasmTerm.cols).toBe(132);
+    expect(wasmTerm.rows).toBe(43);
+
+    term.dispose();
+    wasmTerm.free();
+  });
+
+  test('explicit cols/rows override and resize the injected wasmTerm on open', async () => {
+    const ghostty = await Ghostty.load();
+    const wasmTerm = ghostty.createTerminal(80, 24);
+
+    const term = new Terminal({ ghostty, wasmTerm, cols: 100, rows: 30 });
+    expect(term.cols).toBe(100);
+    expect(term.rows).toBe(30);
+
+    term.open(container!);
+    expect(wasmTerm.cols).toBe(100);
+    expect(wasmTerm.rows).toBe(30);
+
+    term.dispose();
+    wasmTerm.free();
+  });
+
+  test('ownsWasmTerm=true (no injection) still frees on dispose', async () => {
+    // Regression check: the default allocation path must not be broken.
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container!);
+    const wasmTermRef = term.wasmTerm!;
+    term.dispose();
+
+    // After dispose, the Terminal clears its wasmTerm field. We can't safely
+    // call methods on wasmTermRef because the underlying memory is freed —
+    // the assertion here is that dispose() went through the free path at all.
+    expect(term.wasmTerm).toBeUndefined();
+    // Sanity-check: holding the reference does not crash the test harness.
+    // (Calling methods on it would be use-after-free.)
+    expect(wasmTermRef).toBeDefined();
   });
 });

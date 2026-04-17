@@ -2,7 +2,7 @@
  * xterm.js-compatible interfaces
  */
 
-import type { Ghostty } from './ghostty';
+import type { Ghostty, GhosttyTerminal } from './ghostty';
 
 export interface ITerminalOptions {
   cols?: number; // Default: 80
@@ -25,6 +25,22 @@ export interface ITerminalOptions {
   // Internal: Ghostty WASM instance (optional, for test isolation)
   // If not provided, uses the module-level instance from init()
   ghostty?: Ghostty;
+
+  /**
+   * Adopt an existing GhosttyTerminal instead of allocating a fresh one.
+   *
+   * When provided, `open()` skips wasm terminal creation and uses the injected
+   * terminal's buffer/scrollback/mode state directly. The caller retains
+   * ownership: `Terminal.dispose()` will NOT free the wasm terminal, and
+   * `Terminal.reset()` throws (call `free()` + `createTerminal()` yourself).
+   *
+   * When `cols`/`rows` are not provided, they default to the injected
+   * terminal's current dimensions.
+   *
+   * Used to persist terminal state across view lifetimes (e.g. keeping the
+   * buffer alive while the DOM renderer is unmounted and later remounted).
+   */
+  wasmTerm?: GhosttyTerminal;
 }
 
 export interface ITheme {
