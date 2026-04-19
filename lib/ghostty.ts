@@ -225,7 +225,36 @@ export class KeyEncoder {
     this.setOption(KeyEncoderOption.KITTY_KEYBOARD_FLAGS, flags);
   }
 
+  /**
+   * Encode a key event and return a stable, caller-owned Uint8Array.
+   * Safe to hold across further encode() calls.
+   */
   encode(event: KeyEvent): Uint8Array {
+    // .slice() copies out of WASM memory so the returned array survives
+    // future WASM memory growth or reuse of this.outBufPtr.
+    return this.encodeToView(event).slice();
+  }
+
+  /**
+   * Encode a key event and return the UTF-8 string, or null if the
+   * encoder produced no output.
+   *
+   * Avoids the copy that encode() makes: TextDecoder.decode synchronously
+   * reads from the view and produces an independent string, so the view
+   * into WASM memory doesn't need to outlive this call.
+   */
+  encodeToString(event: KeyEvent): string | null {
+    const view = this.encodeToView(event);
+    if (view.length === 0) return null;
+    return TEXT_DECODER.decode(view);
+  }
+
+  /**
+   * Encode and return a view into the WASM output buffer. The view is
+   * only valid until the next encode() call (or until WASM memory grows).
+   * Callers that need a stable array must copy via .slice().
+   */
+  private encodeToView(event: KeyEvent): Uint8Array {
     const eventPtr = this.eventPtr;
 
     // Set every field on every call so stale state from a previous encode
@@ -235,23 +264,24 @@ export class KeyEncoder {
     this.exports.ghostty_key_event_set_mods(eventPtr, event.mods);
     this.exports.ghostty_key_event_set_composing(eventPtr, event.composing ? 1 : 0);
 
-    // Place utf8 bytes in the scratch buffer, replacing it with a larger
-    // allocation if the string exceeds current capacity. For typical
-    // browser keydown events (single codepoints, ≤ 4 bytes) this allocates
-    // once on the first keystroke and is reused thereafter.
+    // Encode utf8 directly into the WASM scratch buffer with encodeInto,
+    // skipping the intermediate Uint8Array that TEXT_ENCODER.encode would
+    // allocate. Pre-size conservatively: each UTF-16 code unit encodes to
+    // at most 3 UTF-8 bytes (surrogate pairs average 2), so length * 3 is
+    // a safe upper bound.
     if (event.utf8 && event.utf8.length > 0) {
-      const utf8Bytes = TEXT_ENCODER.encode(event.utf8);
-      if (utf8Bytes.length > this.utf8Cap) {
+      const maxBytes = event.utf8.length * 3;
+      if (maxBytes > this.utf8Cap) {
         if (this.utf8Ptr !== 0) {
           this.exports.ghostty_wasm_free_u8_array(this.utf8Ptr, this.utf8Cap);
         }
-        // Starting cap is generous (covers anything we expect). If a
-        // caller ever exceeds it, double for amortized O(1) reallocs.
-        this.utf8Cap = Math.max(utf8Bytes.length, this.utf8Cap * 2, KeyEncoder.UTF8_INITIAL_CAP);
+        // Double for amortized O(1) growth, but not below the initial cap.
+        this.utf8Cap = Math.max(maxBytes, this.utf8Cap * 2, KeyEncoder.UTF8_INITIAL_CAP);
         this.utf8Ptr = this.exports.ghostty_wasm_alloc_u8_array(this.utf8Cap);
       }
-      new Uint8Array(this.exports.memory.buffer).set(utf8Bytes, this.utf8Ptr);
-      this.exports.ghostty_key_event_set_utf8(eventPtr, this.utf8Ptr, utf8Bytes.length);
+      const view = new Uint8Array(this.exports.memory.buffer, this.utf8Ptr, this.utf8Cap);
+      const { written } = TEXT_ENCODER.encodeInto(event.utf8, view);
+      this.exports.ghostty_key_event_set_utf8(eventPtr, this.utf8Ptr, written);
     } else {
       this.exports.ghostty_key_event_set_utf8(eventPtr, 0, 0);
     }
@@ -273,20 +303,7 @@ export class KeyEncoder {
     }
 
     const bytesWritten = new DataView(this.exports.memory.buffer).getUint32(this.writtenPtr, true);
-    // .slice() copies out of WASM memory so the returned array is stable
-    // across future WASM memory growth or reuse of this.outBufPtr.
-    return new Uint8Array(this.exports.memory.buffer, this.outBufPtr, bytesWritten).slice();
-  }
-
-  /**
-   * Encode an event and return the UTF-8 string, or null if the encoder
-   * produced no output. This is the common shape InputHandler needs and
-   * lets us skip constructing a new TextDecoder per call.
-   */
-  encodeToString(event: KeyEvent): string | null {
-    const bytes = this.encode(event);
-    if (bytes.length === 0) return null;
-    return TEXT_DECODER.decode(bytes);
+    return new Uint8Array(this.exports.memory.buffer, this.outBufPtr, bytesWritten);
   }
 
   dispose(): void {
