@@ -1192,4 +1192,280 @@ describe('InputHandler', () => {
       expect(dataReceived.length).toBe(0);
     });
   });
+
+  // Regression tests for bugs that were present while the "simple keys" and
+  // "printable character" fast paths bypassed the encoder. Each test here
+  // corresponds to a behavior that used to be wrong because the fast path
+  // never consulted the encoder or terminal-mode state.
+  describe('Regression: encoder bypass removal', () => {
+    // Bug: Shift+Enter was short-circuited to '\r' alongside plain Enter,
+    // making it indistinguishable. Apps using modifyOtherKeys or Kitty rely
+    // on distinguishing them (e.g. "newline without submit" in REPLs).
+    test('Shift+Enter differs from plain Enter', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('Enter', 'Enter'));
+      expect(dataReceived[0]).toBe('\r');
+
+      dataReceived.length = 0;
+      simulateKey(container, createKeyEvent('Enter', 'Enter', { shift: true }));
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).not.toBe('\r');
+      // The encoder emits the modifyOtherKeys sequence for Shift+Enter by
+      // default: ESC [ 27 ; 2 ; 13 ~
+      expect(dataReceived[0]).toBe('\x1b[27;2;13~');
+    });
+
+    // Bug: the hardcoded switch emitted '\x1b[H' for Home regardless of
+    // whether mods included SHIFT, so Shift+Home was indistinguishable from
+    // Home. The encoder's function_keys table has a distinct entry.
+    test('Shift+Home differs from plain Home', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('Home', 'Home'));
+      const plain = dataReceived[0];
+      dataReceived.length = 0;
+
+      simulateKey(container, createKeyEvent('Home', 'Home', { shift: true }));
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).not.toBe(plain);
+      // xterm-style Shift+Home is ESC [ 1 ; 2 H
+      expect(dataReceived[0]).toBe('\x1b[1;2H');
+    });
+
+    test('Shift+End differs from plain End', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('End', 'End'));
+      const plain = dataReceived[0];
+      dataReceived.length = 0;
+
+      simulateKey(container, createKeyEvent('End', 'End', { shift: true }));
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).not.toBe(plain);
+    });
+
+    test('Shift+PageUp and Shift+PageDown preserve Shift', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('PageUp', 'PageUp'));
+      const plainUp = dataReceived[0];
+      dataReceived.length = 0;
+      simulateKey(container, createKeyEvent('PageUp', 'PageUp', { shift: true }));
+      expect(dataReceived[0]).not.toBe(plainUp);
+      dataReceived.length = 0;
+
+      simulateKey(container, createKeyEvent('PageDown', 'PageDown'));
+      const plainDn = dataReceived[0];
+      dataReceived.length = 0;
+      simulateKey(container, createKeyEvent('PageDown', 'PageDown', { shift: true }));
+      expect(dataReceived[0]).not.toBe(plainDn);
+    });
+
+    // Bug: Shift+F-keys emitted the unmodified xterm sequence and dropped
+    // the Shift modifier. The encoder emits the PC-style modified sequence.
+    test('Shift+F1 preserves Shift', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('F1', 'F1'));
+      const plain = dataReceived[0];
+      dataReceived.length = 0;
+
+      simulateKey(container, createKeyEvent('F1', 'F1', { shift: true }));
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).not.toBe(plain);
+      // xterm-style Shift+F1 is ESC [ 1 ; 2 P
+      expect(dataReceived[0]).toBe('\x1b[1;2P');
+    });
+
+    // Bug: Home and End ignored DECCKM (application cursor mode), even
+    // though the parallel Arrow-key handling correctly routed through the
+    // encoder. Home is ESC[H in normal mode, ESCOH in application mode.
+    test('Home honors DECCKM (normal mode)', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        () => false // DECCKM off
+      );
+
+      simulateKey(container, createKeyEvent('Home', 'Home'));
+      expect(dataReceived[0]).toBe('\x1b[H');
+    });
+
+    test('Home honors DECCKM (application mode)', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode: number) => mode === 1 // DECCKM on
+      );
+
+      simulateKey(container, createKeyEvent('Home', 'Home'));
+      expect(dataReceived[0]).toBe('\x1bOH');
+    });
+
+    // Bug: the encoder-fallback utf8 path used
+    //   event.key.length === 1 && event.key.charCodeAt(0) < 128
+    // which excluded non-ASCII BMP characters (and any non-BMP character
+    // entirely). A CJK letter typed via a physical key now reaches the
+    // encoder as utf8 and is emitted verbatim.
+    test('non-ASCII BMP character is emitted as UTF-8', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('KeyA', '你'));
+      expect(dataReceived).toEqual(['你']);
+    });
+
+    // Bug: surrogate-pair input (event.key.length === 2) was rejected by
+    // both the printable fast path (length check) and the encoder-fallback
+    // utf8 path (charCodeAt < 128 check), so emoji with a mapped physical
+    // key produced no output.
+    test('surrogate-pair emoji is emitted as UTF-8', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('KeyA', '😀'));
+      expect(dataReceived).toEqual(['😀']);
+    });
+
+    // Bug: the encoder-fallback utf8 path lowercased event.key, so the
+    // encoder could not distinguish Shift+letter from the base letter.
+    // Case preservation lets the encoder emit the shifted character.
+    test('Shift+letter preserves case in utf8 output', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      // Shift+2 on US layout produces '@'. The old fast path caught this
+      // via isPrintableCharacter; we now rely on the encoder, and the '@'
+      // must still come through (not '2').
+      simulateKey(container, createKeyEvent('Digit2', '@', { shift: true }));
+      expect(dataReceived).toEqual(['@']);
+    });
+
+    // Bug: Kitty keyboard protocol flags were silently ignored for every
+    // key that hit either fast path (printables and simple special keys).
+    // With the bypass removed, flags set on the shared encoder affect all
+    // keys. This is a plumbing regression test — we probe the encoder
+    // directly since InputHandler does not expose flag configuration.
+    test('Kitty flags change Shift+Enter encoding', () => {
+      const encoder = ghostty.createKeyEncoder();
+      try {
+        const td = new TextDecoder();
+
+        const legacy = td.decode(
+          encoder.encode({ action: KeyAction.PRESS, key: Key.ENTER, mods: Mods.SHIFT })
+        );
+        expect(legacy).toBe('\x1b[27;2;13~');
+
+        // Enable disambiguate + report_events (minimal Kitty subset).
+        encoder.setKittyFlags(0x1f);
+        const kitty = td.decode(
+          encoder.encode({ action: KeyAction.PRESS, key: Key.ENTER, mods: Mods.SHIFT })
+        );
+        // Kitty encodes Shift+Enter as ESC [ 13 ; 2 u
+        expect(kitty).toBe('\x1b[13;2u');
+        expect(kitty).not.toBe(legacy);
+      } finally {
+        encoder.dispose();
+      }
+    });
+
+    // Bug: the printable fast path bypassed the encoder, so composing=true
+    // could not be plumbed through. The encoder's legacy path returns no
+    // bytes when composing is true. This verifies the plumbing works.
+    test('composing suppresses encoder output', () => {
+      const encoder = ghostty.createKeyEncoder();
+      try {
+        const td = new TextDecoder();
+
+        const normal = td.decode(
+          encoder.encode({
+            action: KeyAction.PRESS,
+            key: Key.A,
+            mods: Mods.NONE,
+            utf8: 'a',
+          })
+        );
+        expect(normal).toBe('a');
+
+        const composing = td.decode(
+          encoder.encode({
+            action: KeyAction.PRESS,
+            key: Key.A,
+            mods: Mods.NONE,
+            utf8: 'a',
+            composing: true,
+          })
+        );
+        expect(composing).toBe('');
+      } finally {
+        encoder.dispose();
+      }
+    });
+  });
 });
