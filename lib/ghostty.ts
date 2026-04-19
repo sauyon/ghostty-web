@@ -169,25 +169,26 @@ export class KeyEncoder {
 
   // Pre-allocated per-instance scratch used on every encode() call.
   //
-  // Output buffer: 128 bytes covers every documented Ghostty sequence —
-  // legacy forms are <= ~13 bytes, Kitty with all flags + associated text
-  // is <= ~60 bytes. Upstream uses the same 128-byte buffer in its own
-  // C-API tests.
+  // Output buffer: 128 bytes, fixed. Covers every documented Ghostty
+  // sequence — legacy forms are <= ~13 bytes, Kitty with all flags +
+  // associated text is <= ~60 bytes. Upstream uses the same 128-byte
+  // buffer in its own C-API tests. Throws on overflow.
   //
-  // utf8 buffer: the `utf8` field on a key event is "the text produced by
-  // the keystroke," always a single Unicode codepoint in practice (≤ 4
-  // bytes). 16 bytes is 4x the realistic maximum. IME commits with longer
-  // text do not go through this encoder — they reach onData via
-  // compositionend directly.
-  //
-  // Both buffers throw on overflow rather than silently growing; an
-  // overflow in either is a spec bug worth surfacing.
+  // utf8 buffer: capacity grows on demand. Starts unallocated; lazily
+  // sized to 64 bytes on the first keystroke with utf8, and replaced
+  // with a larger allocation only if a keystroke ever delivers a longer
+  // string. 64 is comfortable margin for any browser keydown we expect
+  // (single Unicode scalars, ≤ 4 bytes in UTF-8) plus ZWJ graphemes if
+  // a browser or layout ever delivers one through event.key.
   private eventPtr: number = 0;
   private outBufPtr: number = 0;
   private writtenPtr: number = 0;
+  // utf8Cap is the allocated capacity of utf8Ptr (0 if never allocated).
+  // A new allocation replaces the old one when a string exceeds capacity.
   private utf8Ptr: number = 0;
+  private utf8Cap: number = 0;
   private static readonly OUT_BUF_SIZE = 128;
-  private static readonly UTF8_BUF_SIZE = 16;
+  private static readonly UTF8_INITIAL_CAP = 64;
 
   constructor(exports: GhosttyWasmExports) {
     this.exports = exports;
@@ -206,10 +207,9 @@ export class KeyEncoder {
     this.eventPtr = new DataView(this.exports.memory.buffer).getUint32(eventPtrPtr, true);
     this.exports.ghostty_wasm_free_opaque(eventPtrPtr);
 
-    // Pre-allocate the output buffer, utf8 input buffer, and usize slot
-    // for bytes-written. All reused on every encode() call.
+    // Pre-allocate the fixed output buffer and the usize slot for
+    // bytes-written. The utf8 input buffer is allocated lazily on first use.
     this.outBufPtr = this.exports.ghostty_wasm_alloc_u8_array(KeyEncoder.OUT_BUF_SIZE);
-    this.utf8Ptr = this.exports.ghostty_wasm_alloc_u8_array(KeyEncoder.UTF8_BUF_SIZE);
     this.writtenPtr = this.exports.ghostty_wasm_alloc_usize();
   }
 
@@ -235,15 +235,20 @@ export class KeyEncoder {
     this.exports.ghostty_key_event_set_mods(eventPtr, event.mods);
     this.exports.ghostty_key_event_set_composing(eventPtr, event.composing ? 1 : 0);
 
-    // Copy utf8 into the pre-allocated scratch buffer, or clear the field
-    // if none was provided.
+    // Place utf8 bytes in the scratch buffer, replacing it with a larger
+    // allocation if the string exceeds current capacity. For typical
+    // browser keydown events (single codepoints, ≤ 4 bytes) this allocates
+    // once on the first keystroke and is reused thereafter.
     if (event.utf8 && event.utf8.length > 0) {
       const utf8Bytes = TEXT_ENCODER.encode(event.utf8);
-      if (utf8Bytes.length > KeyEncoder.UTF8_BUF_SIZE) {
-        throw new Error(
-          `Key event utf8 exceeds ${KeyEncoder.UTF8_BUF_SIZE} bytes ` +
-            `(got ${utf8Bytes.length}); this should always be a single codepoint`
-        );
+      if (utf8Bytes.length > this.utf8Cap) {
+        if (this.utf8Ptr !== 0) {
+          this.exports.ghostty_wasm_free_u8_array(this.utf8Ptr, this.utf8Cap);
+        }
+        // Starting cap is generous (covers anything we expect). If a
+        // caller ever exceeds it, double for amortized O(1) reallocs.
+        this.utf8Cap = Math.max(utf8Bytes.length, this.utf8Cap * 2, KeyEncoder.UTF8_INITIAL_CAP);
+        this.utf8Ptr = this.exports.ghostty_wasm_alloc_u8_array(this.utf8Cap);
       }
       new Uint8Array(this.exports.memory.buffer).set(utf8Bytes, this.utf8Ptr);
       this.exports.ghostty_key_event_set_utf8(eventPtr, this.utf8Ptr, utf8Bytes.length);
@@ -286,8 +291,9 @@ export class KeyEncoder {
 
   dispose(): void {
     if (this.utf8Ptr !== 0) {
-      this.exports.ghostty_wasm_free_u8_array(this.utf8Ptr, KeyEncoder.UTF8_BUF_SIZE);
+      this.exports.ghostty_wasm_free_u8_array(this.utf8Ptr, this.utf8Cap);
       this.utf8Ptr = 0;
+      this.utf8Cap = 0;
     }
     if (this.writtenPtr !== 0) {
       this.exports.ghostty_wasm_free_usize(this.writtenPtr);
