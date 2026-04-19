@@ -168,43 +168,38 @@ export class KeyEncoder {
   private encoder: number = 0;
 
   // Pre-allocated per-instance scratch used on every encode() call. These
-  // are reused across keystrokes to avoid WASM alloc/free churn.
+  // are reused across keystrokes to avoid WASM alloc/free churn. 128 bytes
+  // covers every documented Ghostty sequence — legacy forms are <= ~13
+  // bytes, Kitty with all flags + associated text is <= ~60 bytes. Upstream
+  // uses the same 128-byte buffer in its own C-API tests.
   private eventPtr: number = 0;
   private outBufPtr: number = 0;
-  private outBufSize: number = 32;
   private writtenPtr: number = 0;
-  // Most recent utf8 buffer pointer/length so we can free before reallocating.
+  private static readonly OUT_BUF_SIZE = 128;
+  // utf8 scratch buffer (persistent across encode() calls). utf8Cap is the
+  // allocated capacity in bytes; we only realloc when a string exceeds it.
   private utf8Ptr: number = 0;
-  private utf8Len: number = 0;
+  private utf8Cap: number = 0;
 
   constructor(exports: GhosttyWasmExports) {
     this.exports = exports;
 
+    // Create the encoder.
     const encoderPtrPtr = this.exports.ghostty_wasm_alloc_opaque();
     const result = this.exports.ghostty_key_encoder_new(0, encoderPtrPtr);
-    if (result !== 0) {
-      this.exports.ghostty_wasm_free_opaque(encoderPtrPtr);
-      throw new Error(`Failed to create key encoder: ${result}`);
-    }
+    if (result !== 0) throw new Error(`Failed to create key encoder: ${result}`);
     this.encoder = new DataView(this.exports.memory.buffer).getUint32(encoderPtrPtr, true);
     this.exports.ghostty_wasm_free_opaque(encoderPtrPtr);
 
     // Pre-allocate a single reusable event struct.
     const eventPtrPtr = this.exports.ghostty_wasm_alloc_opaque();
     const createResult = this.exports.ghostty_key_event_new(0, eventPtrPtr);
-    if (createResult !== 0) {
-      this.exports.ghostty_wasm_free_opaque(eventPtrPtr);
-      this.exports.ghostty_key_encoder_free(this.encoder);
-      this.encoder = 0;
-      throw new Error(`Failed to create key event: ${createResult}`);
-    }
+    if (createResult !== 0) throw new Error(`Failed to create key event: ${createResult}`);
     this.eventPtr = new DataView(this.exports.memory.buffer).getUint32(eventPtrPtr, true);
     this.exports.ghostty_wasm_free_opaque(eventPtrPtr);
 
-    // Pre-allocate a 32-byte output buffer and a usize slot for bytes-written.
-    // 32 bytes is plenty for every documented Ghostty sequence; we grow on
-    // demand if the encoder reports out_of_memory.
-    this.outBufPtr = this.exports.ghostty_wasm_alloc_u8_array(this.outBufSize);
+    // Pre-allocate the output buffer and a usize slot for bytes-written.
+    this.outBufPtr = this.exports.ghostty_wasm_alloc_u8_array(KeyEncoder.OUT_BUF_SIZE);
     this.writtenPtr = this.exports.ghostty_wasm_alloc_usize();
   }
 
@@ -230,49 +225,41 @@ export class KeyEncoder {
     this.exports.ghostty_key_event_set_mods(eventPtr, event.mods);
     this.exports.ghostty_key_event_set_composing(eventPtr, event.composing ? 1 : 0);
 
-    // Manage the utf8 buffer: free the prior one (if any) and allocate a
-    // new one sized to this call's bytes. The encoder only holds the pointer
-    // for the duration of the encode() call below, so freeing on the next
-    // call (or on dispose) is sufficient.
-    if (this.utf8Ptr !== 0) {
-      this.exports.ghostty_wasm_free_u8_array(this.utf8Ptr, this.utf8Len);
-      this.utf8Ptr = 0;
-      this.utf8Len = 0;
-    }
-
+    // Manage the utf8 scratch buffer. The buffer persists across calls;
+    // we only realloc when the new string exceeds the current capacity.
+    // The encoder only holds the pointer for the duration of the encode()
+    // call below, so reusing the buffer across calls is safe.
     if (event.utf8 && event.utf8.length > 0) {
       const utf8Bytes = TEXT_ENCODER.encode(event.utf8);
-      this.utf8Ptr = this.exports.ghostty_wasm_alloc_u8_array(utf8Bytes.length);
-      this.utf8Len = utf8Bytes.length;
+      if (utf8Bytes.length > this.utf8Cap) {
+        if (this.utf8Ptr !== 0) {
+          this.exports.ghostty_wasm_free_u8_array(this.utf8Ptr, this.utf8Cap);
+        }
+        // Grow to at least 16 bytes so short strings don't churn, and at
+        // least 2x the previous capacity so repeated growth is amortized.
+        this.utf8Cap = Math.max(utf8Bytes.length, this.utf8Cap * 2, 16);
+        this.utf8Ptr = this.exports.ghostty_wasm_alloc_u8_array(this.utf8Cap);
+      }
       new Uint8Array(this.exports.memory.buffer).set(utf8Bytes, this.utf8Ptr);
       this.exports.ghostty_key_event_set_utf8(eventPtr, this.utf8Ptr, utf8Bytes.length);
     } else {
       this.exports.ghostty_key_event_set_utf8(eventPtr, 0, 0);
     }
 
-    let encodeResult = this.exports.ghostty_key_encoder_encode(
+    const encodeResult = this.exports.ghostty_key_encoder_encode(
       this.encoder,
       eventPtr,
       this.outBufPtr,
-      this.outBufSize,
+      KeyEncoder.OUT_BUF_SIZE,
       this.writtenPtr
     );
-
-    // Grow the output buffer if the encoder needed more room. The write
-    // count is left in writtenPtr on out_of_memory per the Zig contract.
+    // Non-zero indicates out_of_memory — our 128-byte buffer should cover
+    // every realistic Ghostty sequence, so this would be a bug.
     if (encodeResult !== 0) {
       const required = new DataView(this.exports.memory.buffer).getUint32(this.writtenPtr, true);
-      this.exports.ghostty_wasm_free_u8_array(this.outBufPtr, this.outBufSize);
-      this.outBufSize = Math.max(required, this.outBufSize * 2);
-      this.outBufPtr = this.exports.ghostty_wasm_alloc_u8_array(this.outBufSize);
-      encodeResult = this.exports.ghostty_key_encoder_encode(
-        this.encoder,
-        eventPtr,
-        this.outBufPtr,
-        this.outBufSize,
-        this.writtenPtr
+      throw new Error(
+        `Key encoder output exceeds ${KeyEncoder.OUT_BUF_SIZE} bytes (needed ${required})`
       );
-      if (encodeResult !== 0) throw new Error(`Failed to encode key: ${encodeResult}`);
     }
 
     const bytesWritten = new DataView(this.exports.memory.buffer).getUint32(this.writtenPtr, true);
@@ -294,16 +281,16 @@ export class KeyEncoder {
 
   dispose(): void {
     if (this.utf8Ptr !== 0) {
-      this.exports.ghostty_wasm_free_u8_array(this.utf8Ptr, this.utf8Len);
+      this.exports.ghostty_wasm_free_u8_array(this.utf8Ptr, this.utf8Cap);
       this.utf8Ptr = 0;
-      this.utf8Len = 0;
+      this.utf8Cap = 0;
     }
     if (this.writtenPtr !== 0) {
       this.exports.ghostty_wasm_free_usize(this.writtenPtr);
       this.writtenPtr = 0;
     }
     if (this.outBufPtr !== 0) {
-      this.exports.ghostty_wasm_free_u8_array(this.outBufPtr, this.outBufSize);
+      this.exports.ghostty_wasm_free_u8_array(this.outBufPtr, KeyEncoder.OUT_BUF_SIZE);
       this.outBufPtr = 0;
     }
     if (this.eventPtr !== 0) {
