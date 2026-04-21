@@ -155,9 +155,10 @@ export class Ghostty {
   }
 }
 
-// Singleton TextEncoder shared across all KeyEncoder instances. Constructing
-// one per keystroke showed up as avoidable allocation pressure.
+// Singleton text codecs shared across all KeyEncoder instances. Constructing
+// these per keystroke showed up as avoidable allocation pressure.
 const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
 
 /**
  * Key Encoder - converts keyboard events into terminal escape sequences
@@ -250,7 +251,36 @@ export class KeyEncoder {
     this.setOption(KeyEncoderOption.KITTY_KEYBOARD_FLAGS, flags);
   }
 
+  /**
+   * Encode a key event and return a stable, caller-owned Uint8Array.
+   * Safe to hold across further encode() calls.
+   */
   encode(event: KeyEvent): Uint8Array {
+    // .slice() copies out of WASM memory so the returned array survives
+    // future WASM memory growth or reuse of this.outBufPtr.
+    return this.encodeToView(event).slice();
+  }
+
+  /**
+   * Encode a key event and return the UTF-8 string, or null if the
+   * encoder produced no output.
+   *
+   * Avoids the copy that encode() makes: TextDecoder.decode synchronously
+   * reads from the view and produces an independent string, so the view
+   * into WASM memory doesn't need to outlive this call.
+   */
+  encodeToString(event: KeyEvent): string | null {
+    const view = this.encodeToView(event);
+    if (view.length === 0) return null;
+    return TEXT_DECODER.decode(view);
+  }
+
+  /**
+   * Encode and return a view into the WASM output buffer. The view is
+   * only valid until the next encode() call (or until WASM memory grows).
+   * Callers that need a stable array must copy via .slice().
+   */
+  private encodeToView(event: KeyEvent): Uint8Array {
     const eventPtr = this.eventPtr;
 
     // Set every field on every call so stale state from a previous encode
@@ -325,9 +355,7 @@ export class KeyEncoder {
     }
 
     const bytesWritten = new DataView(this.exports.memory.buffer).getUint32(this.writtenPtr, true);
-    // .slice() copies out of WASM memory so the returned array survives
-    // future WASM memory growth or reuse of this.outBufPtr.
-    return new Uint8Array(this.exports.memory.buffer, this.outBufPtr, bytesWritten).slice();
+    return new Uint8Array(this.exports.memory.buffer, this.outBufPtr, bytesWritten);
   }
 
   dispose(): void {
