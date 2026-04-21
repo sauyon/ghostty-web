@@ -1267,4 +1267,68 @@ describe('InputHandler', () => {
       expect(dataReceived).toEqual(['😀']);
     });
   });
+
+  describe('Motion encoding (SGR)', () => {
+    // Mouse tracking config enabling any-motion tracking (mode 1003).
+    const trackingMouseConfig = {
+      hasMouseTracking: () => true,
+      hasSgrMouseMode: () => true,
+      getCellDimensions: () => ({ width: 10, height: 20 }),
+      getCanvasOffset: () => ({ left: 0, top: 0 }),
+    };
+
+    test('no-button motion encodes as 35 (base 3 + motion flag 32)', () => {
+      // In xterm SGR, the low 2 bits of the button field hold the button
+      // (0/1/2 for left/middle/right, 3 for "no button"), and bit 5
+      // (value 32) is the motion flag. "Motion with no button held" is
+      // 3 + 32 = 35. Emitting 32 — the old behavior — means "motion with
+      // left button held", and zellij reads every hover as a drag-select,
+      // painting an ever-growing selection rectangle across the canvas.
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode: number) => mode === 1003,
+        undefined,
+        undefined,
+        trackingMouseConfig
+      );
+
+      expect((handler as any).mouseButtonsPressed).toBe(0);
+      container.dispatchEvent(new MouseEvent('mousemove', { clientX: 15, clientY: 10 }));
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toMatch(/^\x1b\[<35;\d+;\d+M$/);
+    });
+
+    test('motion while holding left button still encodes as 32', () => {
+      // Complement to the test above: with left held, base button is 0 and
+      // motion adds 32, giving 32 — matches xterm SGR, preserves the
+      // drag-select path for TUIs that use mode 1002 (button motion).
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode: number) => mode === 1003,
+        undefined,
+        undefined,
+        trackingMouseConfig
+      );
+
+      (handler as any).mouseButtonsPressed = 0b001; // left held
+      dataReceived.length = 0;
+      container.dispatchEvent(new MouseEvent('mousemove', { clientX: 15, clientY: 10 }));
+      const motion = dataReceived.find((d) => d.startsWith('\x1b[<'));
+      expect(motion).toMatch(/^\x1b\[<32;\d+;\d+M$/);
+    });
+  });
 });
