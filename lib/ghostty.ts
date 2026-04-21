@@ -187,6 +187,9 @@ export class KeyEncoder {
   // A new allocation replaces the old one when a string exceeds capacity.
   private utf8Ptr: number = 0;
   private utf8Cap: number = 0;
+  // Scratch slot for setOption values. Allocated lazily on first use so
+  // encoders that never call setOption don't pay for it.
+  private optionValuePtr: number = 0;
   private static readonly OUT_BUF_SIZE = 128;
   private static readonly UTF8_INITIAL_CAP = 64;
 
@@ -230,11 +233,13 @@ export class KeyEncoder {
   }
 
   setOption(option: KeyEncoderOption, value: boolean | number): void {
-    const valuePtr = this.exports.ghostty_wasm_alloc_u8();
+    // Lazy-allocate a single reusable u8 slot on first use.
+    if (this.optionValuePtr === 0) {
+      this.optionValuePtr = this.exports.ghostty_wasm_alloc_u8();
+    }
     const view = new DataView(this.exports.memory.buffer);
-    view.setUint8(valuePtr, typeof value === 'boolean' ? (value ? 1 : 0) : value);
-    this.exports.ghostty_key_encoder_setopt(this.encoder, option, valuePtr);
-    this.exports.ghostty_wasm_free_u8(valuePtr);
+    view.setUint8(this.optionValuePtr, typeof value === 'boolean' ? (value ? 1 : 0) : value);
+    this.exports.ghostty_key_encoder_setopt(this.encoder, option, this.optionValuePtr);
   }
 
   setKittyFlags(flags: KittyKeyFlags): void {
@@ -323,6 +328,10 @@ export class KeyEncoder {
   }
 
   dispose(): void {
+    if (this.optionValuePtr !== 0) {
+      this.exports.ghostty_wasm_free_u8(this.optionValuePtr);
+      this.optionValuePtr = 0;
+    }
     if (this.utf8Ptr !== 0) {
       this.exports.ghostty_wasm_free_u8_array(this.utf8Ptr, this.utf8Cap);
       this.utf8Ptr = 0;

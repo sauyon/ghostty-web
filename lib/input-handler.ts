@@ -207,6 +207,11 @@ export class InputHandler {
   private lastBeforeInputData: string | null = null;
   private lastBeforeInputTime = 0;
   private static readonly BEFORE_INPUT_IGNORE_MS = 100;
+  // Cache of encoder option values last pushed to the WASM encoder, so
+  // keystroke handling can skip the setOption WASM round-trip when nothing
+  // changed. `undefined` means "never synced"; any first query on a new
+  // handler will emit one setOption per option regardless of mode state.
+  private syncedEncoderOptions = new Map<KeyEncoderOption, boolean | number>();
 
   /**
    * Create a new InputHandler
@@ -321,6 +326,17 @@ export class InputHandler {
   }
 
   /**
+   * Push an encoder option value to WASM only if it differs from the last
+   * value we pushed. Terminal modes rarely change between keystrokes, so
+   * this saves two WASM round-trips per keystroke in the steady state.
+   */
+  private syncEncoderOption(option: KeyEncoderOption, value: boolean | number): void {
+    if (this.syncedEncoderOptions.get(option) === value) return;
+    this.encoder.setOption(option, value);
+    this.syncedEncoderOptions.set(option, value);
+  }
+
+  /**
    * Extract modifier flags from KeyboardEvent
    * @param event - KeyboardEvent
    * @returns Mods flags
@@ -411,9 +427,11 @@ export class InputHandler {
     // Sync encoder options with terminal mode state before every encode.
     // DEC mode 1 (DECCKM) → cursor-key application mode.
     // DEC mode 66 (DECNKM) → keypad application mode.
+    // syncEncoderOption skips the WASM round-trip when the value hasn't
+    // changed since last keystroke, which is the common case.
     if (this.getModeCallback) {
-      this.encoder.setOption(KeyEncoderOption.CURSOR_KEY_APPLICATION, this.getModeCallback(1));
-      this.encoder.setOption(KeyEncoderOption.KEYPAD_KEY_APPLICATION, this.getModeCallback(66));
+      this.syncEncoderOption(KeyEncoderOption.CURSOR_KEY_APPLICATION, this.getModeCallback(1));
+      this.syncEncoderOption(KeyEncoderOption.KEYPAD_KEY_APPLICATION, this.getModeCallback(66));
     }
 
     let data: string | null;

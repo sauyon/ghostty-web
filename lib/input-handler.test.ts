@@ -1468,6 +1468,41 @@ describe('InputHandler', () => {
       }
     });
 
+    // Regression for the encoder-option cache (InputHandler.syncEncoderOption).
+    // We skip pushing options when the value is unchanged; this test makes
+    // sure mode *changes* do propagate — i.e., the cache invalidates
+    // correctly when getModeCallback starts returning a different value.
+    test('encoder options track mode changes across keystrokes', () => {
+      let cursorApp = false;
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode: number) => mode === 1 && cursorApp
+      );
+
+      // First: DECCKM off → CSI form.
+      simulateKey(container, createKeyEvent('ArrowUp', 'ArrowUp'));
+      expect(dataReceived[0]).toBe('\x1b[A');
+      dataReceived.length = 0;
+
+      // Flip the mode. The next keystroke must pick it up.
+      cursorApp = true;
+      simulateKey(container, createKeyEvent('ArrowUp', 'ArrowUp'));
+      expect(dataReceived[0]).toBe('\x1bOA');
+      dataReceived.length = 0;
+
+      // And flip back.
+      cursorApp = false;
+      simulateKey(container, createKeyEvent('ArrowUp', 'ArrowUp'));
+      expect(dataReceived[0]).toBe('\x1b[A');
+    });
+
     // Regression for the utf8 buffer grow path. The buffer starts at 64
     // bytes on first use and must replace itself with a larger allocation
     // when a string exceeds capacity. This test passes a 100-byte utf8
