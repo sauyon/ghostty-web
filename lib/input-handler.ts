@@ -214,10 +214,6 @@ export class InputHandler {
   // changed. `undefined` means "never synced"; any first query on a new
   // handler will emit one setOption per option regardless of mode state.
   private syncedEncoderOptions = new Map<KeyEncoderOption, boolean | number>();
-  // Reused across keystrokes to avoid the TextDecoder allocation per call.
-  // Once #8 merges and we migrate to encoder.encodeToString, this field
-  // goes away.
-  private decoder = new TextDecoder();
 
   /**
    * Create a new InputHandler
@@ -469,21 +465,20 @@ export class InputHandler {
     event.preventDefault();
     event.stopPropagation();
 
-    let data: string;
+    let data: string | null;
     try {
-      const encoded = this.encoder.encode({
+      data = this.encoder.encodeToString({
         action: KeyAction.PRESS,
         key,
         mods,
         utf8,
       });
-      data = encoded.length === 0 ? '' : this.decoder.decode(encoded);
     } catch (error) {
       console.warn('Failed to encode key:', event.code, error);
       return;
     }
 
-    if (data.length > 0) {
+    if (data !== null && data.length > 0) {
       this.onDataCallback(data);
       this.recordKeyDownData(data);
     }
