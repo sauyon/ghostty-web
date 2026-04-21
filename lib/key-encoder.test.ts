@@ -46,6 +46,35 @@ describe('KeyEncoder', () => {
     }
   });
 
+  test('encodeToString() returns the UTF-8 string for a typical keystroke', () => {
+    const encoder = ghostty.createKeyEncoder();
+    try {
+      const out = encoder.encodeToString({
+        action: KeyAction.PRESS,
+        key: Key.ENTER,
+        mods: Mods.NONE,
+      });
+      expect(out).toBe('\r');
+    } finally {
+      encoder.dispose();
+    }
+  });
+
+  test('encodeToString() returns null when the encoder produces no output', () => {
+    const encoder = ghostty.createKeyEncoder();
+    try {
+      // A modifier key alone (Shift) produces no output in legacy mode.
+      const out = encoder.encodeToString({
+        action: KeyAction.PRESS,
+        key: Key.SHIFT_LEFT,
+        mods: Mods.NONE,
+      });
+      expect(out).toBeNull();
+    } finally {
+      encoder.dispose();
+    }
+  });
+
   test('setKittyFlags affects encoded output', () => {
     const encoder = ghostty.createKeyEncoder();
     const decoder = new TextDecoder();
