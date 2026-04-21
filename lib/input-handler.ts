@@ -436,8 +436,19 @@ export class InputHandler {
 
     // mapKeyCode succeeded → we own this key. Prevent browser default
     // (search shortcuts, F11 fullscreen, Ctrl+W close tab, etc.) before
-    // attempting to encode, so a failed encode drops the keystroke
-    // silently rather than letting it trigger a browser action.
+    // attempting to encode, so a failed or empty encode drops the
+    // keystroke silently rather than letting it trigger a browser action.
+    //
+    // This is a deliberate divergence from native Ghostty, which returns
+    // `.ignored` from keyCallback when the encoder produces no output and
+    // lets the apprt decide whether to propagate the key (Surface.zig
+    // around line 2670). In a native context that lets OS-level shortcuts
+    // and apprt keybinds run; in a browser context "ignored" would mean
+    // the browser fires its own default action with no intermediate layer
+    // to filter, which is rarely what users typing into a terminal want.
+    // Empty-encode mapped keys are also rare in our path: mapKeyCode
+    // already filters unmapped keys, and most mapped keys produce non-
+    // empty encodings in default mode.
     event.preventDefault();
     event.stopPropagation();
 
