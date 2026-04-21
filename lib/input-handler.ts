@@ -434,6 +434,13 @@ export class InputHandler {
       this.syncEncoderOption(KeyEncoderOption.KEYPAD_KEY_APPLICATION, this.getModeCallback(66));
     }
 
+    // mapKeyCode succeeded → we own this key. Prevent browser default
+    // (search shortcuts, F11 fullscreen, Ctrl+W close tab, etc.) before
+    // attempting to encode, so a failed encode drops the keystroke
+    // silently rather than letting it trigger a browser action.
+    event.preventDefault();
+    event.stopPropagation();
+
     let data: string | null;
     try {
       data = this.encoder.encodeToString({
@@ -446,9 +453,6 @@ export class InputHandler {
       console.warn('Failed to encode key:', event.code, error);
       return;
     }
-
-    event.preventDefault();
-    event.stopPropagation();
 
     if (data !== null && data.length > 0) {
       this.onDataCallback(data);
