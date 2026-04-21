@@ -193,24 +193,40 @@ export class KeyEncoder {
   constructor(exports: GhosttyWasmExports) {
     this.exports = exports;
 
-    // Create the encoder.
-    const encoderPtrPtr = this.exports.ghostty_wasm_alloc_opaque();
-    const result = this.exports.ghostty_key_encoder_new(0, encoderPtrPtr);
-    if (result !== 0) throw new Error(`Failed to create key encoder: ${result}`);
-    this.encoder = new DataView(this.exports.memory.buffer).getUint32(encoderPtrPtr, true);
-    this.exports.ghostty_wasm_free_opaque(encoderPtrPtr);
+    // Construction has multiple steps that can each fail. If any throws
+    // after an earlier one has stored a pointer, we free everything via
+    // dispose() so WASM memory doesn't leak. dispose() is safe on
+    // partially-constructed state because every pointer field is
+    // initialized to 0 and only set after its allocation succeeds.
+    try {
+      // Create the encoder.
+      const encoderPtrPtr = this.exports.ghostty_wasm_alloc_opaque();
+      const result = this.exports.ghostty_key_encoder_new(0, encoderPtrPtr);
+      if (result !== 0) {
+        this.exports.ghostty_wasm_free_opaque(encoderPtrPtr);
+        throw new Error(`Failed to create key encoder: ${result}`);
+      }
+      this.encoder = new DataView(this.exports.memory.buffer).getUint32(encoderPtrPtr, true);
+      this.exports.ghostty_wasm_free_opaque(encoderPtrPtr);
 
-    // Pre-allocate a single reusable event struct.
-    const eventPtrPtr = this.exports.ghostty_wasm_alloc_opaque();
-    const createResult = this.exports.ghostty_key_event_new(0, eventPtrPtr);
-    if (createResult !== 0) throw new Error(`Failed to create key event: ${createResult}`);
-    this.eventPtr = new DataView(this.exports.memory.buffer).getUint32(eventPtrPtr, true);
-    this.exports.ghostty_wasm_free_opaque(eventPtrPtr);
+      // Pre-allocate a single reusable event struct.
+      const eventPtrPtr = this.exports.ghostty_wasm_alloc_opaque();
+      const createResult = this.exports.ghostty_key_event_new(0, eventPtrPtr);
+      if (createResult !== 0) {
+        this.exports.ghostty_wasm_free_opaque(eventPtrPtr);
+        throw new Error(`Failed to create key event: ${createResult}`);
+      }
+      this.eventPtr = new DataView(this.exports.memory.buffer).getUint32(eventPtrPtr, true);
+      this.exports.ghostty_wasm_free_opaque(eventPtrPtr);
 
-    // Pre-allocate the fixed output buffer and the usize slot for
-    // bytes-written. The utf8 input buffer is allocated lazily on first use.
-    this.outBufPtr = this.exports.ghostty_wasm_alloc_u8_array(KeyEncoder.OUT_BUF_SIZE);
-    this.writtenPtr = this.exports.ghostty_wasm_alloc_usize();
+      // Pre-allocate the fixed output buffer and the usize slot for
+      // bytes-written. The utf8 input buffer is allocated lazily on first use.
+      this.outBufPtr = this.exports.ghostty_wasm_alloc_u8_array(KeyEncoder.OUT_BUF_SIZE);
+      this.writtenPtr = this.exports.ghostty_wasm_alloc_usize();
+    } catch (e) {
+      this.dispose();
+      throw e;
+    }
   }
 
   setOption(option: KeyEncoderOption, value: boolean | number): void {

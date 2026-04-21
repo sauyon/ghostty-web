@@ -1467,5 +1467,59 @@ describe('InputHandler', () => {
         encoder.dispose();
       }
     });
+
+    // Regression for the utf8 buffer grow path. The buffer starts at 64
+    // bytes on first use and must replace itself with a larger allocation
+    // when a string exceeds capacity. This test passes a 100-byte utf8
+    // string through and verifies the encoder emits it verbatim — which
+    // only works if the grow path (a) doesn't corrupt the pointer, (b)
+    // doesn't truncate via encodeInto pre-sizing, and (c) properly frees
+    // the prior allocation.
+    test('utf8 scratch buffer grows beyond initial capacity', () => {
+      const encoder = ghostty.createKeyEncoder();
+      try {
+        const td = new TextDecoder();
+
+        // First: a small utf8 that fits in the initial 64 bytes.
+        const small = td.decode(
+          encoder.encode({ action: KeyAction.PRESS, key: Key.A, mods: Mods.NONE, utf8: 'a' })
+        );
+        expect(small).toBe('a');
+
+        // Then: a 100-byte utf8 that forces a realloc. The encoder emits
+        // utf8 verbatim in legacy mode for unmodified printable keys.
+        const longStr = 'a'.repeat(100);
+        const big = td.decode(
+          encoder.encode({ action: KeyAction.PRESS, key: Key.A, mods: Mods.NONE, utf8: longStr })
+        );
+        expect(big).toBe(longStr);
+
+        // And again after growth: short strings still work (old pointer
+        // correctly freed, new pointer usable for short writes too).
+        const afterGrow = td.decode(
+          encoder.encode({ action: KeyAction.PRESS, key: Key.A, mods: Mods.NONE, utf8: 'b' })
+        );
+        expect(afterGrow).toBe('b');
+      } finally {
+        encoder.dispose();
+      }
+    });
+
+    // Regression for the output buffer overflow path. The output buffer
+    // is fixed at 128 bytes and throws with the required size on overflow.
+    // A 500-byte utf8 in legacy mode produces a 500-byte output sequence
+    // (the encoder emits utf8 verbatim for unmodified printable keys),
+    // which exceeds the buffer and must throw.
+    test('output buffer overflow throws with required size', () => {
+      const encoder = ghostty.createKeyEncoder();
+      try {
+        const longStr = 'a'.repeat(500);
+        expect(() =>
+          encoder.encode({ action: KeyAction.PRESS, key: Key.A, mods: Mods.NONE, utf8: longStr })
+        ).toThrow(/exceeds 128 bytes.*needed 500/);
+      } finally {
+        encoder.dispose();
+      }
+    });
   });
 });
