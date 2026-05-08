@@ -1,26 +1,359 @@
 /**
- * Box drawing line renderer (U+2500..U+257F).
+ * Box-drawing and Block-element renderer (U+2500..U+259F).
  *
- * Covers four sub-families:
- *   - Orthogonal lines, corners, T-junctions, crosses, stubs, double-line
- *     variants — described by directional weights in the EDGES table and
- *     drawn by `drawEdges`.
- *   - Quarter-circle arcs (╭╮╯╰) — drawn as cubic Bezier curves so they
- *     join cleanly to neighboring straight cells.
- *   - Dashed/dotted horizontal & vertical lines — drawn with integer-pixel
- *     gap distribution so they tile cleanly across cells of any width.
- *   - Diagonals (╱╲╳) — drawn with sub-pixel overshoot so the diagonal
- *     reaches the cell corner exactly under anti-aliasing.
+ * Glyphs in this range are designed to tile seamlessly across cells.
+ * Letting the font render them is fragile:
+ *   - The font's advance width may not match our cell width exactly,
+ *     leaving gaps (or overlaps) between adjacent box-drawing chars.
+ *   - The font's chosen ascent/descent for these glyphs rarely matches
+ *     the cell height we need for descender-safe text rendering, so
+ *     vertical lines and full blocks leave gaps between rows.
+ *   - Different fonts encode these glyphs with different proportions, so
+ *     visual consistency is poor.
  *
- * Ports the algorithm from Ghostty native's `box.zig:linesChar`. The
- * junction-aware arm endpoints (`up_bottom`, `down_top`, `left_right`,
- * `right_left`) are what make weighted corners and T-junctions look
- * correct: a heavy crossbar fully covers a light arm, a double-line
- * corner forms a clean inner "L" instead of two crossing parallels, etc.
+ * We draw them as canvas paths sized to the cell instead. This is the
+ * standard fix — Alacritty, kitty, wezterm, Ghostty native, and Windows
+ * Terminal all do this. The implementation here ports Ghostty's
+ * `box.zig` (U+2500..U+257F) and `block.zig` (U+2580..U+259F) into
+ * Canvas2D, including:
+ *   - junction-aware arm endpoints for clean weighted T-junctions and
+ *     double-line corners (`drawEdges`),
+ *   - cubic-Bezier arcs that join flush to straight neighbors (`drawArc`),
+ *   - axis-asymmetric dashed-line layout that tiles across cells
+ *     (`drawDashed`),
+ *   - sub-pixel diagonal overshoot for clean tiling under anti-aliasing
+ *     (`drawDiagonal`),
+ *   - a `block(alignment, wFrac, hFrac)` / `quadrant({tl,tr,bl,br})`
+ *     pair for the U+2580..U+259F family.
  */
 
-import { D, H, L, N, heavyThickness } from './common';
-import type { Weight } from './common';
+// ============================================================================
+// Common types
+// ============================================================================
+
+// Edge weight: none, light (single thin line), heavy (single thick line),
+// or double (two parallel thin lines with a 1-light gap between them).
+type Weight = 0 | 1 | 2 | 3;
+const N: Weight = 0;
+const L: Weight = 1;
+const H: Weight = 2;
+const D: Weight = 3;
+
+function heavyThickness(lightPx: number): number {
+  return lightPx * 2;
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/**
+ * Returns true if the codepoint is a box-drawing or block-element glyph
+ * that we render directly. Caller should skip the font path in that case.
+ */
+export function isBoxOrBlock(codepoint: number): boolean {
+  return codepoint >= 0x2500 && codepoint <= 0x259f;
+}
+
+/**
+ * Render a box-drawing or block-element glyph into the cell at (x, y, w, h).
+ *
+ *   - `color` is the css color string used for the foreground stroke/fill.
+ *   - `lightPx` is the font-derived light box-stroke thickness in CSS
+ *     pixels (heavy is 2× this; double is two parallels separated by
+ *     one light gap, totaling 3× this). Use the `boxThickness` value
+ *     measured in `CanvasRenderer.measureFont`.
+ *
+ * Returns true if the glyph was handled; false if the caller should
+ * fall back to font rendering.
+ */
+export function drawBoxOrBlock(
+  ctx: CanvasRenderingContext2D,
+  codepoint: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  color: string,
+  lightPx: number
+): boolean {
+  if (codepoint >= 0x2580 && codepoint <= 0x259f) {
+    return drawBlockElement(ctx, codepoint, x, y, w, h, color);
+  }
+  if (codepoint >= 0x2500 && codepoint <= 0x257f) {
+    return drawBoxLine(ctx, codepoint, x, y, w, h, color, lightPx);
+  }
+  return false;
+}
+
+// ============================================================================
+// Block elements (U+2580..U+259F)
+//
+// Ports the structure of Ghostty's `block.zig`: named fraction constants
+// (`block.zig:19-28`), a generic `block(alignment, wFrac, hFrac)` helper
+// (`block.zig:111-152`), a `quadrant({tl,tr,bl,br})` helper for the
+// multi-corner combinations (`block.zig:168-177`), and a shade helper
+// for ░▒▓ that maps to the same alpha levels Ghostty bakes into its
+// sprite atlas (`common.zig:42-51`: 0x40 / 0x80 / 0xc0 = 0.251 / 0.502 /
+// 0.753).
+// ============================================================================
+
+// Named fractions, matching block.zig:19-28.
+const ONE_EIGHTH = 1 / 8;
+const ONE_QUARTER = 1 / 4;
+const THREE_EIGHTHS = 3 / 8;
+const HALF = 1 / 2;
+const FIVE_EIGHTHS = 5 / 8;
+const THREE_QUARTERS = 3 / 4;
+const SEVEN_EIGHTHS = 7 / 8;
+
+/**
+ * Where in the cell to anchor a partial-cell `block`.
+ *   - `'upper'`: full width, anchored to the cell top.
+ *   - `'lower'`: full width, anchored to the cell bottom.
+ *   - `'left'`:  full height, anchored to the cell left.
+ *   - `'right'`: full height, anchored to the cell right.
+ *
+ * Mirrors Ghostty's `Alignment` named constants (`common.zig:92-95`).
+ */
+type Alignment = 'upper' | 'lower' | 'left' | 'right';
+
+interface Quads {
+  tl?: boolean;
+  tr?: boolean;
+  bl?: boolean;
+  br?: boolean;
+}
+
+/**
+ * Fill a fractional sub-rectangle of the cell, anchored per `alignment`.
+ * Sizes are given as fractions of the cell so the same call shape works
+ * for halves, eighths, and full-cell rendering.
+ */
+function block(
+  ctx: CanvasRenderingContext2D,
+  ox: number,
+  oy: number,
+  cw: number,
+  ch: number,
+  color: string,
+  alignment: Alignment,
+  wFrac: number,
+  hFrac: number
+): void {
+  const w = cw * wFrac;
+  const h = ch * hFrac;
+  let dx = 0;
+  let dy = 0;
+  switch (alignment) {
+    case 'upper':
+      dx = (cw - w) / 2;
+      dy = 0;
+      break;
+    case 'lower':
+      dx = (cw - w) / 2;
+      dy = ch - h;
+      break;
+    case 'left':
+      dx = 0;
+      dy = (ch - h) / 2;
+      break;
+    case 'right':
+      dx = cw - w;
+      dy = (ch - h) / 2;
+      break;
+  }
+  ctx.fillStyle = color;
+  ctx.fillRect(ox + dx, oy + dy, w, h);
+}
+
+/**
+ * Fill any subset of the cell's four 2x2 quadrants. Ports Ghostty's
+ * `quadrant` (`block.zig:168-177`) for the ▖▗▘▙▚▛▜▝▞▟ family.
+ */
+function quadrant(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  color: string,
+  q: Quads
+): void {
+  ctx.fillStyle = color;
+  const hw = w / 2;
+  const hh = h / 2;
+  if (q.tl) ctx.fillRect(x, y, hw, hh);
+  if (q.tr) ctx.fillRect(x + hw, y, hw, hh);
+  if (q.bl) ctx.fillRect(x, y + hh, hw, hh);
+  if (q.br) ctx.fillRect(x + hw, y + hh, hw, hh);
+}
+
+/**
+ * Fill the entire cell at a fractional opacity. Used for ░▒▓.
+ */
+function fullShade(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  color: string,
+  alpha: number
+): void {
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+  ctx.restore();
+}
+
+function drawBlockElement(
+  ctx: CanvasRenderingContext2D,
+  cp: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  color: string
+): boolean {
+  switch (cp) {
+    // ▀▄▌▐ — halves.
+    case 0x2580: // ▀ upper half
+      block(ctx, x, y, w, h, color, 'upper', 1, HALF);
+      return true;
+    case 0x2584: // ▄ lower half
+      block(ctx, x, y, w, h, color, 'lower', 1, HALF);
+      return true;
+    case 0x258c: // ▌ left half
+      block(ctx, x, y, w, h, color, 'left', HALF, 1);
+      return true;
+    case 0x2590: // ▐ right half
+      block(ctx, x, y, w, h, color, 'right', HALF, 1);
+      return true;
+
+    // ▔▕ — top and right one-eighth strokes.
+    case 0x2594: // ▔ upper 1/8
+      block(ctx, x, y, w, h, color, 'upper', 1, ONE_EIGHTH);
+      return true;
+    case 0x2595: // ▕ right 1/8
+      block(ctx, x, y, w, h, color, 'right', ONE_EIGHTH, 1);
+      return true;
+
+    // ▁▂▃▅▆▇ — lower-eighths family. Each fills the bottom n/8 of the cell.
+    case 0x2581: // ▁ lower 1/8
+      block(ctx, x, y, w, h, color, 'lower', 1, ONE_EIGHTH);
+      return true;
+    case 0x2582: // ▂ lower 2/8
+      block(ctx, x, y, w, h, color, 'lower', 1, ONE_QUARTER);
+      return true;
+    case 0x2583: // ▃ lower 3/8
+      block(ctx, x, y, w, h, color, 'lower', 1, THREE_EIGHTHS);
+      return true;
+    case 0x2585: // ▅ lower 5/8
+      block(ctx, x, y, w, h, color, 'lower', 1, FIVE_EIGHTHS);
+      return true;
+    case 0x2586: // ▆ lower 6/8
+      block(ctx, x, y, w, h, color, 'lower', 1, THREE_QUARTERS);
+      return true;
+    case 0x2587: // ▇ lower 7/8
+      block(ctx, x, y, w, h, color, 'lower', 1, SEVEN_EIGHTHS);
+      return true;
+
+    // █ full block.
+    case 0x2588:
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, w, h);
+      return true;
+
+    // ▉▊▋▍▎▏ — left-eighths family. Each fills the left n/8 of the cell.
+    case 0x2589: // ▉ left 7/8
+      block(ctx, x, y, w, h, color, 'left', SEVEN_EIGHTHS, 1);
+      return true;
+    case 0x258a: // ▊ left 6/8
+      block(ctx, x, y, w, h, color, 'left', THREE_QUARTERS, 1);
+      return true;
+    case 0x258b: // ▋ left 5/8
+      block(ctx, x, y, w, h, color, 'left', FIVE_EIGHTHS, 1);
+      return true;
+    case 0x258d: // ▍ left 3/8
+      block(ctx, x, y, w, h, color, 'left', THREE_EIGHTHS, 1);
+      return true;
+    case 0x258e: // ▎ left 2/8
+      block(ctx, x, y, w, h, color, 'left', ONE_QUARTER, 1);
+      return true;
+    case 0x258f: // ▏ left 1/8
+      block(ctx, x, y, w, h, color, 'left', ONE_EIGHTH, 1);
+      return true;
+
+    // ░▒▓ — shades.
+    case 0x2591: // ░ light shade
+      fullShade(ctx, x, y, w, h, color, 0.25);
+      return true;
+    case 0x2592: // ▒ medium shade
+      fullShade(ctx, x, y, w, h, color, 0.5);
+      return true;
+    case 0x2593: // ▓ dark shade
+      fullShade(ctx, x, y, w, h, color, 0.75);
+      return true;
+
+    // ▖▗▘▝ — single-quadrant blocks.
+    case 0x2596: // ▖ lower-left
+      quadrant(ctx, x, y, w, h, color, { bl: true });
+      return true;
+    case 0x2597: // ▗ lower-right
+      quadrant(ctx, x, y, w, h, color, { br: true });
+      return true;
+    case 0x2598: // ▘ upper-left
+      quadrant(ctx, x, y, w, h, color, { tl: true });
+      return true;
+    case 0x259d: // ▝ upper-right
+      quadrant(ctx, x, y, w, h, color, { tr: true });
+      return true;
+
+    // ▙▚▛▜▞▟ — multi-quadrant combinations.
+    case 0x2599: // ▙
+      quadrant(ctx, x, y, w, h, color, { tl: true, bl: true, br: true });
+      return true;
+    case 0x259a: // ▚
+      quadrant(ctx, x, y, w, h, color, { tl: true, br: true });
+      return true;
+    case 0x259b: // ▛
+      quadrant(ctx, x, y, w, h, color, { tl: true, tr: true, bl: true });
+      return true;
+    case 0x259c: // ▜
+      quadrant(ctx, x, y, w, h, color, { tl: true, tr: true, br: true });
+      return true;
+    case 0x259e: // ▞
+      quadrant(ctx, x, y, w, h, color, { tr: true, bl: true });
+      return true;
+    case 0x259f: // ▟
+      quadrant(ctx, x, y, w, h, color, { tr: true, bl: true, br: true });
+      return true;
+  }
+  return false;
+}
+
+// ============================================================================
+// Box-drawing lines (U+2500..U+257F)
+//
+// Four sub-families:
+//   - Orthogonal lines, corners, T-junctions, crosses, stubs, and double
+//     variants — described by directional weights in the EDGES table and
+//     drawn by `drawEdges`.
+//   - Quarter-circle arcs (╭╮╯╰) — drawn as cubic Bezier curves so they
+//     join cleanly to neighboring straight cells.
+//   - Dashed/dotted horizontal & vertical lines — drawn with integer-
+//     pixel gap distribution that tiles cleanly across cells.
+//   - Diagonals (╱╲╳) — drawn with sub-pixel overshoot so the diagonal
+//     reaches the cell corner exactly under anti-aliasing.
+//
+// Ports the algorithm from Ghostty native's `box.zig:linesChar`. The
+// junction-aware arm endpoints (`up_bottom`, `down_top`, `left_right`,
+// `right_left`) are what make weighted corners and T-junctions look
+// correct: a heavy crossbar fully covers a light arm, a double-line
+// corner forms a clean inner "L" instead of two crossing parallels, etc.
+// ============================================================================
 
 interface Edges {
   l: Weight;
@@ -179,12 +512,7 @@ const ARC = new Map<number, Corner>([
   [0x2570, 'tr'], // ╰ up-right
 ]);
 
-/**
- * Draw a U+2500..U+257F glyph into the cell at (x, y, w, h).
- * `lightPx` is the font-derived light stroke thickness in CSS pixels.
- * Returns true if the codepoint was handled.
- */
-export function drawBoxLine(
+function drawBoxLine(
   ctx: CanvasRenderingContext2D,
   cp: number,
   x: number,
