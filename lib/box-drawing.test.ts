@@ -233,6 +233,28 @@ describe('box-drawing', () => {
         { x: CW / 2, y: CH / 2, w: CW / 2, h: CH / 2 }, // br
       ]);
     });
+
+    // Per-codepoint quadrant assertions catch dispatch swaps (e.g. if
+    // ▖↔▗ get switched in the case list, the bare "draws something"
+    // coverage test wouldn't notice — this would).
+    const tl = { x: 0, y: 0, w: CW / 2, h: CH / 2 };
+    const tr = { x: CW / 2, y: 0, w: CW / 2, h: CH / 2 };
+    const bl = { x: 0, y: CH / 2, w: CW / 2, h: CH / 2 };
+    const br = { x: CW / 2, y: CH / 2, w: CW / 2, h: CH / 2 };
+    test.each([
+      [0x2596, 'lower-left ▖', [bl]],
+      [0x2597, 'lower-right ▗', [br]],
+      [0x2598, 'upper-left ▘', [tl]],
+      [0x259d, 'upper-right ▝', [tr]],
+      [0x259a, 'tl + br ▚', [tl, br]],
+      [0x259e, 'tr + bl ▞', [tr, bl]],
+      [0x259b, 'tl + tr + bl ▛', [tl, tr, bl]],
+      [0x259c, 'tl + tr + br ▜', [tl, tr, br]],
+      [0x259f, 'tr + bl + br ▟', [tr, bl, br]],
+    ])('U+%s quadrant glyph %s', (cp, _name, expected) => {
+      expect(rectsOnly(draw(cp).ctx.ops)).toEqual(expected);
+    });
+
     test('░ U+2591 light shade applies 0.25 alpha multiplier', () => {
       const { ctx } = draw(0x2591);
       const alphaOp = ctx.ops.find((o) => o.kind === 'globalAlpha');
@@ -325,21 +347,50 @@ describe('box-drawing', () => {
       );
       expect(crossBarCovered).toBe(true);
     });
-    test('╔ U+2554 double down-right corner forms inner L (no crossing parallels)', () => {
-      // Bug regression check: in the buggy version, the right and down
-      // double parallels would extend all the way to the cell center,
-      // crossing each other. Ghostty stops each parallel at the inner
-      // edge of the orthogonal stroke.
+    test('╔ U+2554 double down-right corner: junction-aware inner L', () => {
+      // Regression check for the junction-aware-endpoints fix. With
+      // CW=10, CH=20, LT=1, the four expected rects are derived from
+      // box.zig's `linesChar` algorithm:
+      //   v_light_left=4.5, v_light_right=5.5
+      //   v_double_left=3.5, v_double_right=6.5
+      //   h_light_top=9.5,  h_light_bottom=10.5
+      //   h_double_top=8.5, h_double_bottom=11.5
+      //
+      // The OUTER L (top-left of the corner) is formed by rect (1) +
+      // rect (3) meeting at (v_double_left, h_double_top). The INNER
+      // strokes stop at the perpendicular's inner edge (rect 2 starts
+      // at v_light_right, rect 4 starts at h_light_bottom), so the
+      // upper-left interior of the corner is left empty — that's what
+      // makes a clean double-line corner instead of crossing parallels.
       const { ctx } = draw(0x2554);
       const rects = rectsOnly(ctx.ops);
-      // Should be 4 rects: top horizontal, bottom horizontal, left
-      // vertical, right vertical — each with junction-aware endpoints.
-      expect(rects.length).toBe(4);
-      // No rect should occupy the upper-left quadrant interior (≈
-      // 1/3 of cell from top-left).
-      const inUpperLeft = (r: typeof rects[0]) =>
-        r.x + r.w <= CW / 3 && r.y + r.h <= CH / 3;
-      expect(rects.every((r) => !inUpperLeft(r))).toBe(true);
+      expect(rects).toEqual([
+        // Top outer horizontal: from outer-left to right edge.
+        { x: 3.5, y: 8.5, w: 6.5, h: 1 },
+        // Top inner horizontal: starts at v_light_right (the inner
+        // corner), so it does NOT cross the upper-left quadrant.
+        { x: 5.5, y: 10.5, w: 4.5, h: 1 },
+        // Left outer vertical: from outer-top to bottom edge.
+        { x: 3.5, y: 8.5, w: 1, h: 11.5 },
+        // Right inner vertical: starts at h_light_bottom, doesn't
+        // cross the upper-left quadrant.
+        { x: 5.5, y: 10.5, w: 1, h: 9.5 },
+      ]);
+
+      // The buggy version had every parallel extending to cell center,
+      // so a rect would have covered the open inner area. Sanity-check
+      // by asserting no rect touches the inner-corner test point that
+      // should remain empty.
+      const innerOpenX = 4.5; // just above v_light_right
+      const innerOpenY = 10; // just below h_light_top
+      for (const r of rects) {
+        const covers =
+          r.x <= innerOpenX &&
+          innerOpenX < r.x + r.w &&
+          r.y <= innerOpenY &&
+          innerOpenY < r.y + r.h;
+        expect(covers).toBe(false);
+      }
     });
   });
 
@@ -355,32 +406,79 @@ describe('box-drawing', () => {
   });
 
   describe('dashes', () => {
-    test('┄ U+2504 horizontal triple-dash: 3 rects, half-gap on each side', () => {
+    // Concrete expected coordinates rather than re-deriving the
+    // implementation in the test. These were hand-computed from
+    // Ghostty's `dashHorizontal`/`dashVertical` algorithm against the
+    // standard CW=10, CH=20, LT=1 cell.
+
+    test('┄ U+2504 horizontal triple-dash: half-gaps on each side, extra in dashes', () => {
+      // desired_gap = max(4, 1) = 4, cap = floor(10/6) = 1, gap = 1
+      // total_gap = 3, total_dash = 7, dash_w = 2, extra = 1 (goes to dash 0)
+      // pos starts at floor(1/2) = 0
+      // → dash 0 at x=0 w=3, dash 1 at x=4 w=2, dash 2 at x=7 w=2
       const { ctx } = draw(0x2504);
       const rects = rectsOnly(ctx.ops);
-      expect(rects).toHaveLength(3);
-      // First dash starts at half a gap in.
-      const desiredGap = Math.max(4, LT);
-      const cap = Math.floor(CW / (2 * 3));
-      const gap = Math.min(desiredGap, cap);
-      expect(rects[0].x).toBe(Math.floor(gap / 2));
+      const cy = (CH - LT) / 2;
+      expect(rects).toEqual([
+        { x: 0, y: cy, w: 3, h: LT },
+        { x: 4, y: cy, w: 2, h: LT },
+        { x: 7, y: cy, w: 2, h: LT },
+      ]);
+      // Half-gap-on-each-side invariant: the leftmost dash starts at
+      // floor(gap/2) and the rightmost dash ends at total_run -
+      // floor(gap/2). Same gap on both sides → adjacent dashed cells
+      // tile.
+      const lastDash = rects[rects.length - 1];
+      expect(rects[0].x).toBe(0);
+      expect(CW - (lastDash.x + lastDash.w)).toBe(1);
     });
-    test('┆ U+2506 vertical triple-dash: 3 rects, starts at top (no half-gap)', () => {
+
+    test('┆ U+2506 vertical triple-dash: zero gap at top, full gap at bottom', () => {
+      // desired_gap=4, cap=floor(20/6)=3, gap=3
+      // total_gap=9, total_dash=11, dash_h=3, extra=2
+      // pos starts at 0
+      // → dash 0 at y=0 h=4, dash 1 at y=7 h=4, dash 2 at y=14 h=3
       const { ctx } = draw(0x2506);
       const rects = rectsOnly(ctx.ops);
-      expect(rects).toHaveLength(3);
-      // Per Ghostty box.zig:907-909: vertical dashes start at y=0 with
-      // the full extra gap pushed to the bottom. This is the asymmetry
-      // the original port missed.
+      const cx = (CW - LT) / 2;
+      expect(rects).toEqual([
+        { x: cx, y: 0, w: LT, h: 4 },
+        { x: cx, y: 7, w: LT, h: 4 },
+        { x: cx, y: 14, w: LT, h: 3 },
+      ]);
+      // The Ghostty asymmetry invariant (box.zig:878-881): no gap on
+      // top, full gap below the last dash.
       expect(rects[0].y).toBe(0);
+      const last = rects[rects.length - 1];
+      expect(CH - (last.y + last.h)).toBe(3); // == gap_width
     });
+
     test('┈ U+2508 horizontal quad-dash: 4 rects', () => {
-      const { ctx } = draw(0x2508);
-      expect(rectsOnly(ctx.ops)).toHaveLength(4);
+      expect(rectsOnly(draw(0x2508).ctx.ops)).toHaveLength(4);
     });
     test('╌ U+254C horizontal double-dash: 2 rects', () => {
-      const { ctx } = draw(0x254c);
-      expect(rectsOnly(ctx.ops)).toHaveLength(2);
+      expect(rectsOnly(draw(0x254c).ctx.ops)).toHaveLength(2);
+    });
+    test('heavy-dash degenerate fallback uses LIGHT thickness, not heavy', () => {
+      // When the cell is too small to hold `count + count` of anything,
+      // the implementation falls back to a solid line. Ghostty falls
+      // back to a LIGHT line regardless of dash weight (vlineMiddle/
+      // hlineMiddle take .light), so a heavy dash at a tiny cell size
+      // shouldn't suddenly turn into a heavy bar.
+      const ctx = makeCtx();
+      drawBoxOrBlock(
+        ctx as unknown as CanvasRenderingContext2D,
+        0x2505, // ━━━ heavy triple dash
+        0,
+        0,
+        2, // tiny cell — degenerate
+        20,
+        COLOR,
+        1
+      );
+      const rects = rectsOnly(ctx.ops);
+      expect(rects).toHaveLength(1);
+      expect(rects[0].h).toBe(1); // LIGHT, not 2 (heavy)
     });
   });
 

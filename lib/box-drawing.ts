@@ -93,9 +93,10 @@ export function drawBoxOrBlock(
 // (`block.zig:19-28`), a generic `block(alignment, wFrac, hFrac)` helper
 // (`block.zig:111-152`), a `quadrant({tl,tr,bl,br})` helper for the
 // multi-corner combinations (`block.zig:168-177`), and a shade helper
-// for ░▒▓ that maps to the same alpha levels Ghostty bakes into its
-// sprite atlas (`common.zig:42-51`: 0x40 / 0x80 / 0xc0 = 0.251 / 0.502 /
-// 0.753).
+// for ░▒▓. Ghostty bakes alpha levels of 0x40 / 0x80 / 0xc0 into its
+// sprite atlas (`common.zig:42-51`), i.e. 0.251 / 0.502 / 0.753; we
+// use 0.25 / 0.5 / 0.75, which differs by under 0.003 — visually
+// indistinguishable but worth noting.
 // ============================================================================
 
 // Named fractions, matching block.zig:19-28.
@@ -841,9 +842,9 @@ function drawDashed(
   const desired_gap = Math.max(4, lt);
 
   if (dash.vertical) {
-    drawDashRun(ctx, ox + (w - t) / 2, oy, t, h, count, desired_gap, true);
+    drawDashRun(ctx, ox + (w - t) / 2, oy, t, h, count, desired_gap, lt, true);
   } else {
-    drawDashRun(ctx, ox, oy + (h - t) / 2, w, t, count, desired_gap, false);
+    drawDashRun(ctx, ox, oy + (h - t) / 2, w, t, count, desired_gap, lt, false);
   }
 }
 
@@ -855,14 +856,23 @@ function drawDashRun(
   h: number,
   count: number,
   desired_gap: number,
+  lt: number,
   vertical: boolean
 ): void {
   const span = vertical ? h : w;
 
   // Below this size the dashes degenerate to nothing — fall back to a
-  // solid line so the run still tiles with its neighbors.
+  // solid LIGHT line, matching Ghostty's `vlineMiddle(.light)` /
+  // `hlineMiddle(.light)` (box.zig:812, 891). Heavy dashes degenerate
+  // to a light line, not a heavy bar.
   if (span < count + count) {
-    ctx.fillRect(x, y, w, h);
+    if (vertical) {
+      const cx = x + (w - lt) / 2;
+      ctx.fillRect(cx, y, lt, h);
+    } else {
+      const cy = y + (h - lt) / 2;
+      ctx.fillRect(x, cy, w, lt);
+    }
     return;
   }
 
