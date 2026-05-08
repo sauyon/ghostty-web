@@ -10,6 +10,7 @@
  * - Dirty line optimization for 60 FPS
  */
 
+import { drawBoxOrBlock, isBoxOrBlock } from './box-drawing';
 import type { ITheme } from './interfaces';
 import type { SelectionManager } from './selection-manager';
 import type { GhosttyCell, ILink } from './types';
@@ -195,18 +196,48 @@ export class CanvasRenderer {
     // Set font (use actual pixel size for accurate measurement)
     ctx.font = `${this.fontSize}px ${this.fontFamily}`;
 
-    // Measure width using 'M' (typically widest character)
-    const widthMetrics = ctx.measureText('M');
-    const width = Math.ceil(widthMetrics.width);
+    // Width is the font's natural advance. Any rounding here becomes a
+    // visible seam between cells for tiling glyphs (box drawing, blocks),
+    // so we keep it fractional and round only when sizing the canvas.
+    //
+    // Height has to fit two things:
+    //   - All glyphs in the font, including descenders on g/p/y/j/q.
+    //     fontBoundingBox{Ascent,Descent} describe the font's design
+    //     metrics across every glyph, but Canvas2D doesn't expose a way
+    //     to separate "design metrics" from "leading," so for some fonts
+    //     these values include extra space.
+    //   - actualBoundingBox* of a probe string with descenders gives the
+    //     real rendered extent — usually tighter, but in some fonts the
+    //     reported descent is shorter than what individual glyphs use
+    //     (browsers under-report).
+    // Taking max() of both for ascent and descent independently gives a
+    // height that fits every glyph, regardless of which metric a given
+    // browser/font under-reports. We then ceil to whole pixels so rows
+    // don't accumulate sub-pixel drift.
+    //
+    // Box drawing and block elements (U+2500..U+259F) don't get rendered
+    // through the font — see lib/box-drawing.ts. They're drawn as canvas
+    // paths sized to the cell, so they tile regardless of how the font's
+    // glyphs of those codepoints would have extended. This separation
+    // lets us pick a descender-safe cell height without worrying about
+    // tiling.
+    const m = ctx.measureText('M');
+    const probe = ctx.measureText('Mgjpqy│');
 
-    // Measure height using ascent + descent with padding for glyph overflow
-    const ascent = widthMetrics.actualBoundingBoxAscent || this.fontSize * 0.8;
-    const descent = widthMetrics.actualBoundingBoxDescent || this.fontSize * 0.2;
+    const width = m.width;
 
-    // Add 2px padding to height to account for glyphs that overflow (like 'f', 'd', 'g', 'p')
-    // and anti-aliasing pixels
-    const height = Math.ceil(ascent + descent) + 2;
-    const baseline = Math.ceil(ascent) + 1; // Offset baseline by half the padding
+    const fbAscent = probe.fontBoundingBoxAscent ?? 0;
+    const fbDescent = probe.fontBoundingBoxDescent ?? 0;
+    const abAscent = probe.actualBoundingBoxAscent ?? 0;
+    const abDescent = probe.actualBoundingBoxDescent ?? 0;
+
+    const rawAscent = Math.max(fbAscent, abAscent) || this.fontSize * 0.8;
+    const rawDescent = Math.max(fbDescent, abDescent) || this.fontSize * 0.25;
+
+    const ascent = Math.ceil(rawAscent);
+    const descent = Math.ceil(rawDescent);
+    const height = ascent + descent;
+    const baseline = ascent;
 
     return { width, height, baseline };
   }
@@ -241,9 +272,12 @@ export class CanvasRenderer {
     this.canvas.style.width = `${cssWidth}px`;
     this.canvas.style.height = `${cssHeight}px`;
 
-    // Set actual canvas size (scaled for DPI)
-    this.canvas.width = cssWidth * this.devicePixelRatio;
-    this.canvas.height = cssHeight * this.devicePixelRatio;
+    // Set actual canvas size (scaled for DPI). Round to integer device
+    // pixels — the canvas backing store can't store fractional dimensions,
+    // and unrounded values would cause the resize-detection check below
+    // to perpetually disagree with what the canvas actually stores.
+    this.canvas.width = Math.round(cssWidth * this.devicePixelRatio);
+    this.canvas.height = Math.round(cssHeight * this.devicePixelRatio);
 
     // Scale context to match DPI (setting canvas.width/height resets the context)
     this.ctx.scale(this.devicePixelRatio, this.devicePixelRatio);
@@ -285,10 +319,11 @@ export class CanvasRenderer {
       forceAll = true;
     }
 
-    // Resize canvas if dimensions changed
-    const needsResize =
-      this.canvas.width !== dims.cols * this.metrics.width * this.devicePixelRatio ||
-      this.canvas.height !== dims.rows * this.metrics.height * this.devicePixelRatio;
+    // Resize canvas if dimensions changed. Compare against the rounded
+    // device-pixel sizes that `resize()` actually writes into the canvas.
+    const expectedW = Math.round(dims.cols * this.metrics.width * this.devicePixelRatio);
+    const expectedH = Math.round(dims.rows * this.metrics.height * this.devicePixelRatio);
+    const needsResize = this.canvas.width !== expectedW || this.canvas.height !== expectedH;
 
     if (needsResize) {
       this.resize(dims.cols, dims.rows);
@@ -646,16 +681,42 @@ export class CanvasRenderer {
     const textX = cellX;
     const textY = cellY + this.metrics.baseline;
 
-    // Get the character to render - use grapheme lookup for complex scripts
-    let char: string;
-    if (cell.grapheme_len > 0 && this.currentBuffer?.getGraphemeString) {
-      // Cell has additional codepoints - get full grapheme cluster
-      char = this.currentBuffer.getGraphemeString(y, x);
+    // Box-drawing and block-element glyphs (U+2500..U+259F) are designed
+    // to tile across cells. We draw them as canvas paths sized to the
+    // cell rather than going through the font, because:
+    //   - Font advance widths don't always match our cell width exactly,
+    //     leaving seams between adjacent glyphs.
+    //   - Cell height is chosen for descender safety, not for whatever
+    //     proportions the font designer gave U+2502 etc.
+    // This is the standard approach in modern terminal renderers
+    // (Alacritty, kitty, wezterm, Ghostty native).
+    if (
+      cell.grapheme_len === 0 &&
+      cell.codepoint &&
+      isBoxOrBlock(cell.codepoint) &&
+      drawBoxOrBlock(
+        this.ctx,
+        cell.codepoint,
+        cellX,
+        cellY,
+        cellWidth,
+        this.metrics.height,
+        this.ctx.fillStyle as string
+      )
+    ) {
+      // Drawn directly; skip the font path.
     } else {
-      // Simple cell - single codepoint
-      char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
+      // Get the character to render - use grapheme lookup for complex scripts
+      let char: string;
+      if (cell.grapheme_len > 0 && this.currentBuffer?.getGraphemeString) {
+        // Cell has additional codepoints - get full grapheme cluster
+        char = this.currentBuffer.getGraphemeString(y, x);
+      } else {
+        // Simple cell - single codepoint
+        char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
+      }
+      this.ctx.fillText(char, textX, textY);
     }
-    this.ctx.fillText(char, textX, textY);
 
     // Reset alpha
     if (cell.flags & CellFlags.FAINT) {
