@@ -479,12 +479,20 @@ function drawArc(
 // ----------------------------------------------------------------------------
 // Dashed lines
 //
-// Ports Ghostty's `dashHorizontal`/`dashVertical` (box.zig:779-895). The
-// dashes are sized so that:
-//   - half-sized gaps sit on either side of the run, so adjacent dashed
-//     cells tile into one continuous dashed line,
-//   - leftover sub-pixels are distributed to dash widths (not gaps), so
-//     irregularity hides in dash length rather than gap spacing.
+// Ports Ghostty's `dashHorizontal`/`dashVertical` (box.zig:779-928). The
+// horizontal and vertical variants are subtly different — both run with
+// `count` total gaps, but the gaps land in different places:
+//
+//   - Horizontal: half a gap on each side of the run, full gaps between
+//     dashes. Lets adjacent dashed cells tile into one continuous run.
+//   - Vertical: zero gap at the top, full gap at the bottom, full gaps
+//     between dashes. Per Ghostty's comment (box.zig:878-881): "a
+//     single full-sized extra gap is preferred to two half-sized ones
+//     for vertical to allow better joining to solid characters without
+//     creating visible half-sized gaps."
+//
+// Leftover sub-pixels are distributed to dash widths (not gaps), so
+// irregularity hides in dash length rather than gap spacing.
 
 function drawDashed(
   ctx: CanvasRenderingContext2D,
@@ -499,9 +507,10 @@ function drawDashed(
   ctx.fillStyle = color;
   const t = dash.weight === H ? heavyThickness(lt) : lt;
   const count = dash.count;
-  // Use light thickness as the desired gap so dashes look balanced
-  // against the stroke weight of neighboring lines.
-  const desired_gap = lt;
+  // Match Ghostty's per-dispatch desired_gap of `max(4, light)` (box.zig:73,
+  // 81, 89, 97, ...). At small light thicknesses, plain `lt` produces
+  // gaps that are too tight to read as "dashed" against neighboring lines.
+  const desired_gap = Math.max(4, lt);
 
   if (dash.vertical) {
     drawDashRun(ctx, ox + (w - t) / 2, oy, t, h, count, desired_gap, true);
@@ -531,13 +540,15 @@ function drawDashRun(
 
   // Cap the gap so dashes never shrink below half the available run.
   const gap_width = Math.min(desired_gap, Math.floor(span / (2 * count)));
-  const total_gap = gap_width * count; // half-gaps on each side + gaps between
+  const total_gap = gap_width * count;
   const total_dash = Math.floor(span - total_gap);
   const dash_width = Math.floor(total_dash / count);
   let extra = total_dash - dash_width * count;
 
-  // Start half a gap in so the run is centered.
-  let pos = Math.floor(gap_width / 2);
+  // Horizontal: start at half a gap so the run is centered.
+  // Vertical: start at zero with the full extra gap pushed to the bottom
+  // (Ghostty's `dashVertical`, box.zig:907-909).
+  let pos = vertical ? 0 : Math.floor(gap_width / 2);
   for (let i = 0; i < count; i++) {
     let len = dash_width;
     if (extra > 0) {
