@@ -197,6 +197,7 @@ export class InputHandler {
   private isComposing = false;
   private isDisposed = false;
   private mouseButtonsPressed = 0; // Track which buttons are pressed for motion reporting
+  private lastMotionCell: { col: number; row: number } | null = null;
   private lastKeyDownData: string | null = null;
   private lastKeyDownTime = 0;
   private lastPasteData: string | null = null;
@@ -797,20 +798,32 @@ export class InputHandler {
     const cell = this.pixelToCell(event);
     if (!cell) return;
 
+    // Browsers fire mousemove on every sub-cell pixel; the wire protocol
+    // only addresses cells, so coalesce until the cursor crosses a cell
+    // boundary.
+    if (
+      this.lastMotionCell &&
+      this.lastMotionCell.col === cell.col &&
+      this.lastMotionCell.row === cell.row
+    ) {
+      return;
+    }
+    this.lastMotionCell = { col: cell.col, row: cell.row };
+
     // Encode motion per xterm SGR convention: the low 2 bits hold the
     // button (0/1/2 for left/middle/right, 3 for "no button"), and bit 5
     // (value 32) flags the event as motion. So "motion while holding left"
     // is 0 + 32 = 32, and "motion with no button held" is 3 + 32 = 35.
     // Emitting 32 without the `+3` makes TUI apps (zellij, notably) read
     // every hover as a drag-with-left-button and stay in selection mode.
-    let baseButton: number;
-    if (this.mouseButtonsPressed & 1)
-      baseButton = 0; // Left
-    else if (this.mouseButtonsPressed & 2)
-      baseButton = 1; // Middle
-    else if (this.mouseButtonsPressed & 4)
-      baseButton = 2; // Right
-    else baseButton = 3; // No button held (any-motion mode)
+    const baseButton =
+      this.mouseButtonsPressed & 1
+        ? 0 // Left
+        : this.mouseButtonsPressed & 2
+          ? 1 // Middle
+          : this.mouseButtonsPressed & 4
+            ? 2 // Right
+            : 3; // No button held (any-motion mode)
 
     this.sendMouseEvent(baseButton + 32, cell.col, cell.row, false, event);
   }

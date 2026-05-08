@@ -1330,5 +1330,34 @@ describe('InputHandler', () => {
       const motion = dataReceived.find((d) => d.startsWith('\x1b[<'));
       expect(motion).toMatch(/^\x1b\[<32;\d+;\d+M$/);
     });
+
+    test('coalesces mousemove events within a single cell', () => {
+      // Browsers fire mousemove on every sub-cell pixel. The wire protocol
+      // only addresses cells, so we should send one motion event per cell
+      // crossing — not per pixel. With cellWidth=10, x=15 and x=18 are both
+      // in column 1; x=22 is in column 2.
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode: number) => mode === 1003,
+        undefined,
+        undefined,
+        trackingMouseConfig
+      );
+      void handler;
+
+      container.dispatchEvent(new MouseEvent('mousemove', { clientX: 15, clientY: 10 }));
+      container.dispatchEvent(new MouseEvent('mousemove', { clientX: 18, clientY: 10 }));
+      container.dispatchEvent(new MouseEvent('mousemove', { clientX: 22, clientY: 10 }));
+
+      const motions = dataReceived.filter((d) => /^\x1b\[<\d+;\d+;\d+M$/.test(d));
+      expect(motions.length).toBe(2);
+    });
   });
 });
