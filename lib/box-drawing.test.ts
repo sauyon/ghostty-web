@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { drawBoxOrBlock, isBoxOrBlock } from './index';
+import { drawBoxOrBlock, isBoxOrBlock } from './box-drawing';
 
 type Op =
   | { kind: 'fillStyle'; v: string }
