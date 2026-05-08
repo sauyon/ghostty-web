@@ -19,7 +19,7 @@
  * corner forms a clean inner "L" instead of two crossing parallels, etc.
  */
 
-import { D, H, L, N, heavyThickness, lightThickness } from './common';
+import { D, H, L, N, heavyThickness } from './common';
 import type { Weight } from './common';
 
 interface Edges {
@@ -181,6 +181,7 @@ const ARC = new Map<number, Corner>([
 
 /**
  * Draw a U+2500..U+257F glyph into the cell at (x, y, w, h).
+ * `lightPx` is the font-derived light stroke thickness in CSS pixels.
  * Returns true if the codepoint was handled.
  */
 export function drawBoxLine(
@@ -190,30 +191,30 @@ export function drawBoxLine(
   y: number,
   w: number,
   h: number,
-  color: string
+  color: string,
+  lightPx: number
 ): boolean {
-  // Diagonals.
   if (cp === 0x2571 || cp === 0x2572 || cp === 0x2573) {
-    drawDiagonal(ctx, cp, x, y, w, h, color);
+    drawDiagonal(ctx, cp, x, y, w, h, color, lightPx);
     return true;
   }
 
   const arc = ARC.get(cp);
   if (arc !== undefined) {
-    drawArc(ctx, arc, x, y, w, h, color);
+    drawArc(ctx, arc, x, y, w, h, color, lightPx);
     return true;
   }
 
   const dash = DASHED.get(cp);
   if (dash !== undefined) {
-    drawDashed(ctx, dash, x, y, w, h, color);
+    drawDashed(ctx, dash, x, y, w, h, color, lightPx);
     return true;
   }
 
   const e = EDGES.get(cp);
   if (e === undefined) return false;
 
-  drawEdges(ctx, e, x, y, w, h, color);
+  drawEdges(ctx, e, x, y, w, h, color, lightPx);
   return true;
 }
 
@@ -243,10 +244,10 @@ function drawEdges(
   oy: number,
   w: number,
   h: number,
-  color: string
+  color: string,
+  lt: number
 ): void {
-  const lt = lightThickness(h);
-  const ht = heavyThickness(h);
+  const ht = heavyThickness(lt);
 
   // Horizontal stroke positions (y coordinates).
   const h_light_top = (h - lt) / 2;
@@ -401,9 +402,9 @@ function drawArc(
   oy: number,
   w: number,
   h: number,
-  color: string
+  color: string,
+  lt: number
 ): void {
-  const lt = lightThickness(h);
   const center_x = (w - lt) / 2 + lt / 2;
   const center_y = (h - lt) / 2 + lt / 2;
   const r = Math.min(w, h) / 2;
@@ -492,14 +493,15 @@ function drawDashed(
   oy: number,
   w: number,
   h: number,
-  color: string
+  color: string,
+  lt: number
 ): void {
   ctx.fillStyle = color;
-  const t = dash.weight === H ? heavyThickness(h) : lightThickness(h);
+  const t = dash.weight === H ? heavyThickness(lt) : lt;
   const count = dash.count;
   // Use light thickness as the desired gap so dashes look balanced
   // against the stroke weight of neighboring lines.
-  const desired_gap = lightThickness(h);
+  const desired_gap = lt;
 
   if (dash.vertical) {
     drawDashRun(ctx, ox + (w - t) / 2, oy, t, h, count, desired_gap, true);
@@ -566,9 +568,9 @@ function drawDiagonal(
   oy: number,
   w: number,
   h: number,
-  color: string
+  color: string,
+  lt: number
 ): void {
-  const lt = lightThickness(h);
   const slope_x = Math.min(1, w / h);
   const slope_y = Math.min(1, h / w);
 

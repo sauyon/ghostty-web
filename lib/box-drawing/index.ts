@@ -30,9 +30,15 @@ export function isBoxOrBlock(codepoint: number): boolean {
 
 /**
  * Render a box-drawing or block-element glyph into the cell at (x, y, w, h).
- * `color` is the css color string used for the foreground stroke/fill.
- * Returns true if the glyph was handled; false if the caller should fall
- * back to font rendering.
+ *
+ *   - `color` is the css color string used for the foreground stroke/fill.
+ *   - `lightPx` is the font-derived light box-stroke thickness in CSS
+ *     pixels (heavy is 2× this; double is two parallels separated by
+ *     one light gap, totaling 3× this). Use the `boxThickness` value
+ *     measured in `CanvasRenderer.measureFont`.
+ *
+ * Returns true if the glyph was handled; false if the caller should
+ * fall back to font rendering.
  */
 export function drawBoxOrBlock(
   ctx: CanvasRenderingContext2D,
@@ -41,13 +47,14 @@ export function drawBoxOrBlock(
   y: number,
   w: number,
   h: number,
-  color: string
+  color: string,
+  lightPx: number
 ): boolean {
   if (codepoint >= 0x2580 && codepoint <= 0x259f) {
     return drawBlockElement(ctx, codepoint, x, y, w, h, color);
   }
   if (codepoint >= 0x2500 && codepoint <= 0x257f) {
-    return drawBoxLine(ctx, codepoint, x, y, w, h, color);
+    return drawBoxLine(ctx, codepoint, x, y, w, h, color, lightPx);
   }
   return false;
 }
