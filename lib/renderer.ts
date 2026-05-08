@@ -55,6 +55,13 @@ export interface FontMetrics {
   width: number; // Character cell width in CSS pixels
   height: number; // Character cell height in CSS pixels
   baseline: number; // Distance from top to text baseline
+  /**
+   * Light box-drawing stroke thickness in CSS pixels. Measured from the
+   * font's actual U+2500 '─' glyph extent (the font designer's chosen
+   * thickness for box-drawing lines). Box-drawing rendering uses this
+   * for "light" weight; "heavy" is 2× this.
+   */
+  boxThickness: number;
 }
 
 // ============================================================================
@@ -239,7 +246,17 @@ export class CanvasRenderer {
     const height = ascent + descent;
     const baseline = ascent;
 
-    return { width, height, baseline };
+    // Box-drawing stroke thickness, measured from the font's actual
+    // U+2500 '─' glyph. This gives the font designer's intended weight
+    // for box-drawing lines, which varies meaningfully across fonts
+    // (Monaco @14pt → 1.27, Menlo @14pt → 1.18, Courier @14pt → 1.00).
+    // Falls back to ~7% of font size if the font lacks the glyph (some
+    // browsers report 0 then) — close to the typical underline weight.
+    const dash = ctx.measureText('─');
+    const dashHeight = (dash.actualBoundingBoxAscent ?? 0) + (dash.actualBoundingBoxDescent ?? 0);
+    const boxThickness = Math.max(1, Math.round(dashHeight || this.fontSize * 0.07));
+
+    return { width, height, baseline, boxThickness };
   }
 
   /**
@@ -701,7 +718,8 @@ export class CanvasRenderer {
         cellY,
         cellWidth,
         this.metrics.height,
-        this.ctx.fillStyle as string
+        this.ctx.fillStyle as string,
+        this.metrics.boxThickness
       )
     ) {
       // Drawn directly; skip the font path.
