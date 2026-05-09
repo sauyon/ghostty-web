@@ -173,9 +173,13 @@ describe('box-drawing', () => {
   });
 
   describe('coverage', () => {
-    // Every codepoint in the range should produce drawing ops, with no
-    // exceptions. A regression here means a glyph is silently falling
-    // back to font rendering.
+    // Exhaustive check that every codepoint in the range U+2500..U+259F
+    // (160 codepoints) produces at least one drawing op. A regression
+    // means a glyph is silently falling back to font rendering. This
+    // test is weak on its own — a dispatch swap (▖↔▗) would still
+    // pass — so the per-glyph shape assertions later in this file
+    // do the actual correctness checking. This test catches *missing*
+    // dispatch entries, not *wrong* ones.
     test('every codepoint U+2500..U+259F draws something', () => {
       const missing: number[] = [];
       for (let cp = 0x2500; cp <= 0x259f; cp++) {
