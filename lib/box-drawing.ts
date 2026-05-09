@@ -578,20 +578,24 @@ function drawEdges(
 ): void {
   const ht = heavyThickness(lt);
 
-  // Horizontal stroke positions (y coordinates).
-  const h_light_top = (h - lt) / 2;
+  // Horizontal stroke positions (y coordinates). At realistic cell
+  // sizes (lt ≈ 1, h ≈ 20) all of these are well-positive, but we
+  // clamp at 0 to match Ghostty's saturating-subtraction (`-|`,
+  // box.zig:408-435) so a degenerate-tiny cell doesn't produce
+  // negative-coordinate rects.
+  const h_light_top = Math.max(0, (h - lt) / 2);
   const h_light_bottom = h_light_top + lt;
-  const h_heavy_top = (h - ht) / 2;
+  const h_heavy_top = Math.max(0, (h - ht) / 2);
   const h_heavy_bottom = h_heavy_top + ht;
-  const h_double_top = h_light_top - lt;
+  const h_double_top = Math.max(0, h_light_top - lt);
   const h_double_bottom = h_light_bottom + lt;
 
-  // Vertical stroke positions (x coordinates).
-  const v_light_left = (w - lt) / 2;
+  // Vertical stroke positions (x coordinates). Same clamp.
+  const v_light_left = Math.max(0, (w - lt) / 2);
   const v_light_right = v_light_left + lt;
-  const v_heavy_left = (w - ht) / 2;
+  const v_heavy_left = Math.max(0, (w - ht) / 2);
   const v_heavy_right = v_heavy_left + ht;
-  const v_double_left = v_light_left - lt;
+  const v_double_left = Math.max(0, v_light_left - lt);
   const v_double_right = v_light_right + lt;
 
   // Bottom of the up-arm.
@@ -865,6 +869,13 @@ function drawDashRun(
   // solid LIGHT line, matching Ghostty's `vlineMiddle(.light)` /
   // `hlineMiddle(.light)` (box.zig:812, 891). Heavy dashes degenerate
   // to a light line, not a heavy bar.
+  //
+  // Note: Ghostty compares integer cell sizes (`metrics.cell_width <
+  // count + count`); ours compares the fractional `span`. At the exact
+  // boundary (e.g. span = 4.0 with count = 2) the two implementations
+  // make the same decision, but for fractional values just above
+  // (e.g. 4.001) we'll proceed with full dash math while Ghostty
+  // would still produce a sensible result on integer pixels too.
   if (span < count + count) {
     if (vertical) {
       const cx = x + (w - lt) / 2;
@@ -877,7 +888,13 @@ function drawDashRun(
   }
 
   // Cap the gap so dashes never shrink below half the available run.
-  const gap_width = Math.min(desired_gap, Math.floor(span / (2 * count)));
+  // The early-return above guarantees `span >= 2*count`, so
+  // `floor(span/(2*count)) >= 1` mathematically. The Math.max(1, ...)
+  // is defensive — at fractional spans near the boundary the floor
+  // can't actually return 0 but the bound makes the invariant
+  // explicit (Ghostty asserts the same on integer arithmetic at
+  // box.zig:824).
+  const gap_width = Math.min(desired_gap, Math.max(1, Math.floor(span / (2 * count))));
   const total_gap = gap_width * count;
   const total_dash = Math.floor(span - total_gap);
   const dash_width = Math.floor(total_dash / count);

@@ -302,7 +302,10 @@ export class CanvasRenderer {
     // Scale context to match DPI (setting canvas.width/height resets the context)
     this.ctx.scale(this.devicePixelRatio, this.devicePixelRatio);
 
-    // Set text rendering properties for crisp text
+    // Re-set text rendering properties (the canvas.width/height write
+    // above reset them). `ctx.font` is intentionally NOT set here
+    // because `renderCellText` sets it per-cell to handle italic/bold
+    // — restoring it here would just be a wasted write.
     this.ctx.textBaseline = 'alphabetic';
     this.ctx.textAlign = 'left';
 
@@ -702,10 +705,10 @@ export class CanvasRenderer {
     //     proportions the font designer gave U+2502 etc.
     // This is the standard approach in modern terminal renderers
     // (Alacritty, kitty, wezterm, Ghostty native).
+    const isSimpleBoxOrBlock =
+      cell.grapheme_len === 0 && cell.codepoint && isBoxOrBlock(cell.codepoint);
     if (
-      cell.grapheme_len === 0 &&
-      cell.codepoint &&
-      isBoxOrBlock(cell.codepoint) &&
+      isSimpleBoxOrBlock &&
       drawBoxOrBlock(
         this.ctx,
         cell.codepoint,
@@ -719,15 +722,13 @@ export class CanvasRenderer {
     ) {
       // Drawn directly; skip the font path.
     } else {
-      // Get the character to render - use grapheme lookup for complex scripts
-      let char: string;
-      if (cell.grapheme_len > 0 && this.currentBuffer?.getGraphemeString) {
-        // Cell has additional codepoints - get full grapheme cluster
-        char = this.currentBuffer.getGraphemeString(y, x);
-      } else {
-        // Simple cell - single codepoint
-        char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
-      }
+      // Multi-codepoint grapheme (e.g. emoji, ZWJ sequence): look up
+      // the full cluster from the buffer. Otherwise: a single
+      // codepoint, or 32 (space) if the cell is empty.
+      const char =
+        cell.grapheme_len > 0 && this.currentBuffer?.getGraphemeString
+          ? this.currentBuffer.getGraphemeString(y, x)
+          : String.fromCodePoint(cell.codepoint || 32);
       this.ctx.fillText(char, textX, textY);
     }
 
