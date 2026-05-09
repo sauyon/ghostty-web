@@ -247,11 +247,14 @@ export class CanvasRenderer {
     const baseline = ascent;
 
     // Box-drawing stroke thickness, measured from the font's actual
-    // U+2500 '─' glyph. This gives the font designer's intended weight
-    // for box-drawing lines, which varies meaningfully across fonts
-    // (Monaco @14pt → 1.27, Menlo @14pt → 1.18, Courier @14pt → 1.00).
-    // Falls back to ~7% of font size if the font lacks the glyph (some
-    // browsers report 0 then) — close to the typical underline weight.
+    // U+2500 '─' glyph. The pre-rounding value reflects the font
+    // designer's intended weight (Monaco @28pt → 2.54, Menlo @28pt
+    // → 2.35, Courier @28pt → 2.01). Math.round means small fonts
+    // collapse to 1px regardless of font (Monaco/Menlo/Courier all
+    // round to 1 at 14pt), but at larger sizes the variation comes
+    // through. Falls back to ~7% of font size if the font lacks the
+    // glyph (some browsers report 0) — close to typical underline
+    // weight. min 1 so the thinnest possible stroke is still visible.
     const dash = ctx.measureText('─');
     const dashHeight = (dash.actualBoundingBoxAscent ?? 0) + (dash.actualBoundingBoxDescent ?? 0);
     const boxThickness = Math.max(1, Math.round(dashHeight || this.fontSize * 0.07));
@@ -1072,11 +1075,18 @@ export class CanvasRenderer {
    * Clear entire canvas
    */
   public clear(): void {
+    // The context is DPR-scaled by `resize()`, so its drawing coordinates
+    // are CSS pixels. `canvas.width`/`canvas.height` are device pixels;
+    // dividing by DPR converts them to CSS pixels for the clearRect/
+    // fillRect calls. Without the division, we'd be asking the canvas
+    // to clear/fill DPR× the actual area (clamped internally, but wrong).
+    const cssWidth = this.canvas.width / this.devicePixelRatio;
+    const cssHeight = this.canvas.height / this.devicePixelRatio;
     // clearRect first because fillRect composites rather than replaces,
     // so transparent/translucent backgrounds wouldn't clear previous content.
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.ctx.clearRect(0, 0, cssWidth, cssHeight);
     this.ctx.fillStyle = this.theme.background;
-    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    this.ctx.fillRect(0, 0, cssWidth, cssHeight);
   }
 
   /**

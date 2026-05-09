@@ -236,7 +236,9 @@ describe('box-drawing', () => {
 
     // Per-codepoint quadrant assertions catch dispatch swaps (e.g. if
     // ▖↔▗ get switched in the case list, the bare "draws something"
-    // coverage test wouldn't notice — this would).
+    // coverage test wouldn't notice — this would). 9 of 10 quadrant
+    // glyphs are listed here; ▙ (U+2599) is covered by the dedicated
+    // test above so it's not duplicated here.
     const tl = { x: 0, y: 0, w: CW / 2, h: CH / 2 };
     const tr = { x: CW / 2, y: 0, w: CW / 2, h: CH / 2 };
     const bl = { x: 0, y: CH / 2, w: CW / 2, h: CH / 2 };
@@ -255,13 +257,14 @@ describe('box-drawing', () => {
       expect(rectsOnly(draw(cp).ctx.ops)).toEqual(expected);
     });
 
-    test('░ U+2591 light shade applies 0.25 alpha multiplier', () => {
+    test('░ U+2591 light shade applies ~25% alpha multiplier', () => {
       const { ctx } = draw(0x2591);
       const alphaOp = ctx.ops.find((o) => o.kind === 'globalAlpha');
       expect(alphaOp).toBeTruthy();
-      // We do `globalAlpha *= 0.25`, starting from 1 → 0.25.
+      // Tolerance covers both our 0.25 and Ghostty's 0x40/255 = 0.2509…
+      // A future change to match Ghostty exactly should still pass.
       if (alphaOp && alphaOp.kind === 'globalAlpha') {
-        expect(alphaOp.v).toBeCloseTo(0.25, 9);
+        expect(alphaOp.v).toBeCloseTo(0.25, 2);
       }
       // And the alpha is applied within save/restore.
       expect(ctx.ops[0]?.kind).toBe('save');
