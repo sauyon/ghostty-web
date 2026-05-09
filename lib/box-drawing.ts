@@ -582,7 +582,9 @@ function drawEdges(
   // sizes (lt ≈ 1, h ≈ 20) all of these are well-positive, but we
   // clamp at 0 to match Ghostty's saturating-subtraction (`-|`,
   // box.zig:408-435) so a degenerate-tiny cell doesn't produce
-  // negative-coordinate rects.
+  // negative-coordinate rects. Note: at `lt > h` derived values like
+  // `h_heavy_bottom = h_heavy_top + ht` can still extend past `h` —
+  // that's also faithful to Ghostty (overdraw, not negative coords).
   const h_light_top = Math.max(0, (h - lt) / 2);
   const h_light_bottom = h_light_top + lt;
   const h_heavy_top = Math.max(0, (h - ht) / 2);
@@ -738,6 +740,11 @@ function drawArc(
   color: string,
   lt: number
 ): void {
+  // Verbatim port of Ghostty's `(cell_width - thick_px) / 2 + thick_px / 2`
+  // (box.zig:704-705). On Ghostty's integer arithmetic this differs from
+  // `cell_width / 2` when `(cell - thick)` is odd; in JS floating-point
+  // the two are mathematically equal. Kept in this shape so the diff
+  // against box.zig stays line-for-line obvious.
   const center_x = (w - lt) / 2 + lt / 2;
   const center_y = (h - lt) / 2 + lt / 2;
   const r = Math.min(w, h) / 2;
@@ -858,7 +865,7 @@ function drawDashRun(
   y: number,
   w: number,
   h: number,
-  count: number,
+  count: 2 | 3 | 4,
   desired_gap: number,
   lt: number,
   vertical: boolean
