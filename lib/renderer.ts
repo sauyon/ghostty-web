@@ -60,8 +60,13 @@ export interface FontMetrics {
    * font's actual U+2500 '─' glyph extent (the font designer's chosen
    * thickness for box-drawing lines). Box-drawing rendering uses this
    * for "light" weight; "heavy" is 2× this.
+   *
+   * Optional in the public type to keep this an additive (non-breaking)
+   * change for downstream consumers that construct or mock FontMetrics
+   * objects. The built-in renderer always populates it; external code
+   * that calls `drawBoxOrBlock` directly must supply a value.
    */
-  boxThickness: number;
+  boxThickness?: number;
 }
 
 // ============================================================================
@@ -715,6 +720,10 @@ export class CanvasRenderer {
     // (Alacritty, kitty, wezterm, Ghostty native).
     const isSimpleBoxOrBlock =
       cell.grapheme_len === 0 && cell.codepoint && isBoxOrBlock(cell.codepoint);
+    // boxThickness is optional in the public FontMetrics type for
+    // backward compat, but the built-in measureFont always sets it.
+    // Fall back to a font-size-derived value as a safety net.
+    const boxThickness = this.metrics.boxThickness ?? Math.max(1, Math.round(this.fontSize * 0.07));
     if (
       isSimpleBoxOrBlock &&
       drawBoxOrBlock(
@@ -725,7 +734,7 @@ export class CanvasRenderer {
         cellWidth,
         this.metrics.height,
         this.ctx.fillStyle as string,
-        this.metrics.boxThickness
+        boxThickness
       )
     ) {
       // Drawn directly; skip the font path.
