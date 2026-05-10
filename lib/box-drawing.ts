@@ -62,10 +62,15 @@ export function isBoxOrBlock(codepoint: number): boolean {
  *   - `lightPx` is the font-derived light box-stroke thickness in CSS
  *     pixels (heavy is 2× this; double is two parallels separated by
  *     one light gap, totaling 3× this). Use the `boxThickness` value
- *     measured in `CanvasRenderer.measureFont`.
+ *     measured in `CanvasRenderer.measureFont`. Defensively rounded
+ *     to the nearest integer ≥ 1 inside this function — fractional
+ *     values produce sub-pixel dash positions that don't tile across
+ *     adjacent cells, so the API silently normalizes.
  *
  * Returns true if the glyph was handled; false if the caller should
- * fall back to font rendering.
+ * fall back to font rendering. Returns false (no draw) if `w` or `h`
+ * is non-positive, since a zero-area cell can't contain visible
+ * geometry and would feed `0/0 = NaN` into the arc slope math.
  */
 export function drawBoxOrBlock(
   ctx: CanvasRenderingContext2D,

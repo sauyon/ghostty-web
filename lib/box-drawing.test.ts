@@ -341,31 +341,31 @@ describe('box-drawing', () => {
     test('┼ U+253C light cross = all four arms cover their respective edges', () => {
       const { ctx } = draw(0x253c);
       const rects = rectsOnly(ctx.ops);
-      // ┼ has all four arms (l/r/u/d = light). Each arm is a separate
-      // fillRect, so we expect exactly 4 rects. The earlier "≥ 2"
-      // check would silently pass if the up- or right-arm switch
-      // dropped, so we assert each arm's outer edge is reached.
+      // ┼ has all four arms (l/r/u/d = light). Each arm is one
+      // fillRect so we expect exactly 4 rects. A bug that drops the
+      // up- or right-arm switch case must fail this test, so we
+      // assert per-arm coverage in addition to the rect count.
       expect(rects).toHaveLength(4);
 
-      // Vertical strokes (up + down) must collectively span y=0..CH at
-      // the horizontal center.
-      const cy = CW / 2;
-      const verticalCoverage = rects
-        .filter((r) => r.x <= cy && cy <= r.x + r.w)
-        .map((r) => [r.y, r.y + r.h] as const);
-      const minY = Math.min(...verticalCoverage.map(([t]) => t));
-      const maxY = Math.max(...verticalCoverage.map(([, b]) => b));
+      // Vertical-axis arms (up + down) are narrow rects roughly
+      // light-thick wide; horizontal-axis arms are wide rects roughly
+      // light-thick tall. Filter by the rect's narrow dimension to
+      // separate them — this is unambiguous because none of the
+      // light-cross arms share both dimensions.
+      const verticalArms = rects.filter((r) => r.w <= 2 * LT);
+      const horizontalArms = rects.filter((r) => r.h <= 2 * LT);
+      expect(verticalArms.length).toBeGreaterThanOrEqual(1);
+      expect(horizontalArms.length).toBeGreaterThanOrEqual(1);
+
+      // Up arm reaches y=0 and down arm reaches y=CH.
+      const minY = Math.min(...verticalArms.map((r) => r.y));
+      const maxY = Math.max(...verticalArms.map((r) => r.y + r.h));
       expect(minY).toBe(0);
       expect(maxY).toBe(CH);
 
-      // Horizontal strokes (left + right) must collectively span
-      // x=0..CW at the vertical center.
-      const cyH = CH / 2;
-      const horizontalCoverage = rects
-        .filter((r) => r.y <= cyH && cyH <= r.y + r.h)
-        .map((r) => [r.x, r.x + r.w] as const);
-      const minX = Math.min(...horizontalCoverage.map(([l]) => l));
-      const maxX = Math.max(...horizontalCoverage.map(([, r]) => r));
+      // Left arm reaches x=0 and right arm reaches x=CW.
+      const minX = Math.min(...horizontalArms.map((r) => r.x));
+      const maxX = Math.max(...horizontalArms.map((r) => r.x + r.w));
       expect(minX).toBe(0);
       expect(maxX).toBe(CW);
     });

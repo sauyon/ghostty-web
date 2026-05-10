@@ -719,7 +719,7 @@ export class CanvasRenderer {
     // This is the standard approach in modern terminal renderers
     // (Alacritty, kitty, wezterm, Ghostty native).
     const isSimpleBoxOrBlock =
-      cell.grapheme_len === 0 && cell.codepoint && isBoxOrBlock(cell.codepoint);
+      cell.grapheme_len === 0 && cell.codepoint > 0 && isBoxOrBlock(cell.codepoint);
     // boxThickness is optional in the public FontMetrics type for
     // backward compat, but the built-in measureFont always sets it.
     // Fall back to a font-size-derived value as a safety net.
