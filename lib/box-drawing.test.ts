@@ -180,12 +180,17 @@ describe('box-drawing', () => {
     // pass — so the per-glyph shape assertions later in this file
     // do the actual correctness checking. This test catches *missing*
     // dispatch entries, not *wrong* ones.
-    test('every codepoint U+2500..U+259F draws something', () => {
+    test('every codepoint U+2500..U+259F draws something visible', () => {
       const missing: number[] = [];
       for (let cp = 0x2500; cp <= 0x259f; cp++) {
         const { ctx, handled } = draw(cp);
+        // Require a *non-degenerate* fillRect or a stroke — a 0×0
+        // fillRect would slip through the looser `o.kind === ...`
+        // check.
         const drewSomething = ctx.ops.some(
-          (o) => o.kind === 'fillRect' || o.kind === 'stroke'
+          (o) =>
+            (o.kind === 'fillRect' && o.w > 0 && o.h > 0) ||
+            o.kind === 'stroke'
         );
         if (!handled || !drewSomething) missing.push(cp);
       }
@@ -333,26 +338,36 @@ describe('box-drawing', () => {
       expect(ys).toHaveLength(2);
       expect(ys[1] - ys[0]).toBeCloseTo(2 * LT, 9);
     });
-    test('┼ U+253C light cross = two perpendicular full-extent rects', () => {
+    test('┼ U+253C light cross = all four arms cover their respective edges', () => {
       const { ctx } = draw(0x253c);
       const rects = rectsOnly(ctx.ops);
-      // ┼: up + right + down + left, but symmetric junctions stop each
-      // arm at the edge of the perpendicular crossbar to avoid double
-      // painting. Up arm goes from y=0 to h_light_top, down arm goes
-      // from h_light_bottom to h, horizontal goes full width.
-      // Result: 2 vertical pieces + 1 full horizontal piece OR
-      // 1 full vertical + 2 horizontal pieces — depending on join order.
-      // Either way, the union should cover the cross shape.
-      expect(rects.length).toBeGreaterThanOrEqual(2);
-      // Crossbar pixel must be covered.
-      const crossBarCovered = rects.some(
-        (r) =>
-          r.x <= CW / 2 &&
-          r.x + r.w >= CW / 2 &&
-          r.y <= CH / 2 &&
-          r.y + r.h >= CH / 2
-      );
-      expect(crossBarCovered).toBe(true);
+      // ┼ has all four arms (l/r/u/d = light). Each arm is a separate
+      // fillRect, so we expect exactly 4 rects. The earlier "≥ 2"
+      // check would silently pass if the up- or right-arm switch
+      // dropped, so we assert each arm's outer edge is reached.
+      expect(rects).toHaveLength(4);
+
+      // Vertical strokes (up + down) must collectively span y=0..CH at
+      // the horizontal center.
+      const cy = CW / 2;
+      const verticalCoverage = rects
+        .filter((r) => r.x <= cy && cy <= r.x + r.w)
+        .map((r) => [r.y, r.y + r.h] as const);
+      const minY = Math.min(...verticalCoverage.map(([t]) => t));
+      const maxY = Math.max(...verticalCoverage.map(([, b]) => b));
+      expect(minY).toBe(0);
+      expect(maxY).toBe(CH);
+
+      // Horizontal strokes (left + right) must collectively span
+      // x=0..CW at the vertical center.
+      const cyH = CH / 2;
+      const horizontalCoverage = rects
+        .filter((r) => r.y <= cyH && cyH <= r.y + r.h)
+        .map((r) => [r.x, r.x + r.w] as const);
+      const minX = Math.min(...horizontalCoverage.map(([l]) => l));
+      const maxX = Math.max(...horizontalCoverage.map(([, r]) => r));
+      expect(minX).toBe(0);
+      expect(maxX).toBe(CW);
     });
     test('╔ U+2554 double down-right corner: junction-aware inner L', () => {
       // Regression check for the junction-aware-endpoints fix. With
