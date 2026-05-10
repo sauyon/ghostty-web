@@ -301,26 +301,18 @@ export class CanvasRenderer {
       this.lastViewportY = viewportY;
     }
 
-    // Check if cursor position changed or if blinking (need to redraw cursor line)
+    // Check if cursor position changed or if blinking (need to redraw cursor line).
+    // We add the cursor's current and previous rows into the render set below so
+    // they go through the normal two-phase pass (with adjacency expansion); that
+    // way descenders bleeding into the cursor row from the row above survive a
+    // blink-only repaint.
     const cursorMoved =
       cursor.x !== this.lastCursorPosition.x || cursor.y !== this.lastCursorPosition.y;
+    const cursorRows = new Set<number>();
     if (cursorMoved || this.cursorBlink) {
-      // Mark cursor lines as needing redraw
-      if (!forceAll && !buffer.isRowDirty(cursor.y)) {
-        // Need to redraw cursor line
-        const line = buffer.getLine(cursor.y);
-        if (line) {
-          this.renderLine(line, cursor.y, dims.cols);
-        }
-      }
+      cursorRows.add(cursor.y);
       if (cursorMoved && this.lastCursorPosition.y !== cursor.y) {
-        // Also redraw old cursor line if cursor moved to different line
-        if (!forceAll && !buffer.isRowDirty(this.lastCursorPosition.y)) {
-          const line = buffer.getLine(this.lastCursorPosition.y);
-          if (line) {
-            this.renderLine(line, this.lastCursorPosition.y, dims.cols);
-          }
-        }
+        cursorRows.add(this.lastCursorPosition.y);
       }
     }
 
@@ -418,9 +410,6 @@ export class CanvasRenderer {
       this.previousHoveredLinkRange = this.hoveredLinkRange;
     }
 
-    // Track if anything was actually rendered
-    let anyLinesRendered = false;
-
     // Determine which rows need rendering.
     // We also include adjacent rows (above and below) for each dirty row to handle
     // glyph overflow - tall glyphs like Devanagari vowel signs can extend into
@@ -431,7 +420,11 @@ export class CanvasRenderer {
       const needsRender =
         viewportY > 0
           ? true
-          : forceAll || buffer.isRowDirty(y) || selectionRows.has(y) || hyperlinkRows.has(y);
+          : forceAll ||
+            buffer.isRowDirty(y) ||
+            selectionRows.has(y) ||
+            hyperlinkRows.has(y) ||
+            cursorRows.has(y);
 
       if (needsRender) {
         rowsToRender.add(y);
@@ -441,13 +434,15 @@ export class CanvasRenderer {
       }
     }
 
-    // Render each line
+    // Fetch every line we will draw. We collect first so that we can run two
+    // global passes (backgrounds, then text) in order — this is what allows a
+    // glyph in row N to overflow into row N+1's pixel area without being wiped
+    // by row N+1's clearRect/background fill. See renderLineBackground/Text.
+    const linesToRender: { y: number; line: GhosttyCell[] }[] = [];
     for (let y = 0; y < dims.rows; y++) {
       if (!rowsToRender.has(y)) {
         continue;
       }
-
-      anyLinesRendered = true;
 
       // Fetch line from scrollback or visible screen
       let line: GhosttyCell[] | null = null;
@@ -474,8 +469,22 @@ export class CanvasRenderer {
       }
 
       if (line) {
-        this.renderLine(line, y, dims.cols);
+        linesToRender.push({ y, line });
       }
+    }
+
+    // Phase 1 (global): clear + line background + per-cell backgrounds for
+    // every row in the render set. By doing every row's background work
+    // before any text is drawn, we make sure that when row N's text bleeds
+    // into row N+1's pixel area in phase 2, row N+1's background has already
+    // been painted and the bleed lands on top of it instead of being wiped.
+    for (const { y, line } of linesToRender) {
+      this.renderLineBackground(line, y, dims.cols);
+    }
+
+    // Phase 2 (global): draw text + decorations for every row.
+    for (const { y, line } of linesToRender) {
+      this.renderLineText(line, y, dims.cols);
     }
 
     // Selection highlighting is now integrated into renderCellBackground/renderCellText
@@ -503,40 +512,39 @@ export class CanvasRenderer {
   }
 
   /**
-   * Render a single line using two-pass approach:
-   * 1. First pass: Draw all cell backgrounds
-   * 2. Second pass: Draw all cell text and decorations
+   * Phase 1: clear the line and draw its background plus every cell's
+   * background (including selection highlight).
    *
-   * This two-pass approach is necessary for proper rendering of complex scripts
-   * like Devanagari where diacritics (like vowel sign ि) can extend LEFT of the
-   * base character into the previous cell's visual area. If we draw backgrounds
-   * and text in a single pass (cell by cell), the background of cell N would
-   * cover any left-extending portions of graphemes from cell N-1.
+   * Within a single line, all backgrounds are painted before any text. This
+   * lets a glyph in cell N+1 bleed LEFT into cell N's visual area (e.g. a
+   * Devanagari pre-base vowel) without cell N+1's background covering it.
    */
-  private renderLine(line: GhosttyCell[], y: number, cols: number): void {
+  private renderLineBackground(line: GhosttyCell[], y: number, cols: number): void {
     const lineY = y * this.metrics.height;
     const lineWidth = cols * this.metrics.width;
 
     // Clear line background then fill with theme color.
-    // We clear just the cell area - glyph overflow is handled by also
-    // redrawing adjacent rows (see render() method).
     // clearRect is needed because fillRect composites rather than replaces,
     // so transparent/translucent backgrounds wouldn't clear previous content.
     this.ctx.clearRect(0, lineY, lineWidth, this.metrics.height);
     this.ctx.fillStyle = this.theme.background;
     this.ctx.fillRect(0, lineY, lineWidth, this.metrics.height);
 
-    // PASS 1: Draw all cell backgrounds first
-    // This ensures all backgrounds are painted before any text, allowing text
-    // to "bleed" across cell boundaries without being covered by adjacent backgrounds
     for (let x = 0; x < line.length; x++) {
       const cell = line[x];
       if (cell.width === 0) continue; // Skip spacer cells for wide characters
       this.renderCellBackground(cell, x, y);
     }
+  }
 
-    // PASS 2: Draw all cell text and decorations
-    // Now text can safely extend beyond cell boundaries (for complex scripts)
+  /**
+   * Phase 2: draw every cell's text and decorations on the line.
+   *
+   * Called after every row's renderLineBackground has run, so glyph overflow
+   * into adjacent rows lands on top of those rows' backgrounds (and selection
+   * highlights) rather than being wiped by their clearRect.
+   */
+  private renderLineText(line: GhosttyCell[], y: number, cols: number): void {
     for (let x = 0; x < line.length; x++) {
       const cell = line[x];
       if (cell.width === 0) continue; // Skip spacer cells for wide characters
