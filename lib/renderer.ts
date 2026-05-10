@@ -484,7 +484,7 @@ export class CanvasRenderer {
 
     // Phase 2 (global): draw text + decorations for every row.
     for (const { y, line } of linesToRender) {
-      this.renderLineText(line, y, dims.cols);
+      this.renderLineText(line, y);
     }
 
     // Selection highlighting is now integrated into renderCellBackground/renderCellText
@@ -544,7 +544,7 @@ export class CanvasRenderer {
    * into adjacent rows lands on top of those rows' backgrounds (and selection
    * highlights) rather than being wiped by their clearRect.
    */
-  private renderLineText(line: GhosttyCell[], y: number, cols: number): void {
+  private renderLineText(line: GhosttyCell[], y: number): void {
     for (let x = 0; x < line.length; x++) {
       const cell = line[x];
       if (cell.width === 0) continue; // Skip spacer cells for wide characters
