@@ -77,11 +77,19 @@ export function drawBoxOrBlock(
   color: string,
   lightPx: number
 ): boolean {
+  // Defensive clamps for arbitrary public-API callers. The built-in
+  // renderer always passes positive `w`/`h` and an integer `lightPx`,
+  // but a public consumer might not. A 0×0 cell would feed NaN
+  // (0/0) into `drawArc`'s slope math; a fractional lightPx would
+  // produce sub-pixel dash positions that don't tile.
+  if (!(w > 0) || !(h > 0)) return false;
+  const px = Math.max(1, Math.round(lightPx));
+
   if (codepoint >= 0x2580 && codepoint <= 0x259f) {
     return drawBlockElement(ctx, codepoint, x, y, w, h, color);
   }
   if (codepoint >= 0x2500 && codepoint <= 0x257f) {
-    return drawBoxLine(ctx, codepoint, x, y, w, h, color, lightPx);
+    return drawBoxLine(ctx, codepoint, x, y, w, h, color, px);
   }
   return false;
 }
