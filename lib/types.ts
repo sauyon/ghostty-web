@@ -112,6 +112,22 @@ export enum KeyEncoderOption {
   ALT_ESC_PREFIX = 3, // DEC mode 1036
   MODIFY_OTHER_KEYS_STATE_2 = 4, // xterm modifyOtherKeys
   KITTY_KEYBOARD_FLAGS = 5, // Kitty protocol flags
+  MACOS_OPTION_AS_ALT = 6, // macOS option-as-alt (value: OptionAsAlt)
+}
+
+/**
+ * macOS option key behavior (for MACOS_OPTION_AS_ALT encoder option).
+ *
+ * Note: the underlying Ghostty encoder only consults this option when built
+ * for macOS. The ghostty-web WASM is built as wasm32-freestanding, so this
+ * field has no effect — Alt is always treated as Alt. The enum is kept in
+ * sync with the C API for documentation and forward compatibility.
+ */
+export enum OptionAsAlt {
+  FALSE = 0,
+  TRUE = 1,
+  LEFT = 2,
+  RIGHT = 3,
 }
 
 /**
@@ -406,6 +422,7 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_key_event_set_key(event: number, key: number): void;
   ghostty_key_event_set_mods(event: number, mods: number): void;
   ghostty_key_event_set_utf8(event: number, ptr: number, len: number): void;
+  ghostty_key_event_set_unshifted_codepoint(event: number, codepoint: number): void;
 
   // Terminal lifecycle
   ghostty_terminal_new(cols: number, rows: number): TerminalHandle;
@@ -773,11 +790,14 @@ export class EventEmitter<T> {
  * - INSERT = 4
  *
  * DEC modes (use with is_ansi = false):
+ * - CURSOR_KEYS = 1 (DECCKM)
+ * - KEYPAD_KEYS = 66 (DECNKM)
  * - CURSOR_VISIBLE = 25
  * - MOUSE_TRACKING_NORMAL = 1000
  * - MOUSE_TRACKING_BUTTON = 1002
  * - MOUSE_TRACKING_ANY = 1003
  * - FOCUS_EVENTS = 1004
+ * - ALT_ESC_PREFIX = 1036
  * - ALT_SCREEN = 1047
  * - ALT_SCREEN_WITH_CURSOR = 1049
  * - BRACKETED_PASTE = 2004
@@ -787,11 +807,17 @@ export enum TerminalMode {
   INSERT = 4,
 
   // DEC modes
+  /** DECCKM: arrow keys send application-mode sequences (ESC O A) instead of legacy CSI sequences (ESC [ A). */
+  CURSOR_KEYS = 1,
+  /** DECNKM: numeric keypad sends application-mode sequences. */
+  KEYPAD_KEYS = 66,
   CURSOR_VISIBLE = 25,
   MOUSE_TRACKING_NORMAL = 1000,
   MOUSE_TRACKING_BUTTON = 1002,
   MOUSE_TRACKING_ANY = 1003,
   FOCUS_EVENTS = 1004,
+  /** xterm "meta sends escape": Alt+<key> is encoded as ESC <key>. Default on in Ghostty. */
+  ALT_ESC_PREFIX = 1036,
   ALT_SCREEN = 1047,
   ALT_SCREEN_WITH_CURSOR = 1049,
   BRACKETED_PASTE = 2004,
