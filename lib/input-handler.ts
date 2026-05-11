@@ -16,7 +16,7 @@
 import type { Ghostty } from './ghostty';
 import type { KeyEncoder } from './ghostty';
 import type { IKeyEvent } from './interfaces';
-import { Key, KeyAction, KeyEncoderOption, Mods } from './types';
+import { Key, KeyAction, KeyEncoderOption, Mods, TerminalMode } from './types';
 
 /**
  * Map KeyboardEvent.code values to USB HID Key enum values
@@ -151,6 +151,94 @@ const KEY_MAP: Record<string, Key> = {
   F22: Key.F22,
   F23: Key.F23,
   F24: Key.F24,
+};
+
+/**
+ * US-QWERTY fallback mapping from KeyboardEvent.code to the unshifted ASCII
+ * codepoint the physical key produces on a US layout. Used to populate
+ * `unshiftedCodepoint` on KeyEvent so the Ghostty encoder can recover the
+ * base key when the browser applied a layout-dependent translation to
+ * event.key — most importantly macOS Option composition (Option+B → '∫')
+ * where event.key is the composed character but event.code is still 'KeyB'.
+ *
+ * Without this fallback, Alt+<letter> on macOS silently writes the composed
+ * Unicode character instead of the expected ESC+<letter> that terminal users
+ * rely on for readline/editor bindings.
+ *
+ * Layouts that aren't US-QWERTY produce wrong alt-prefix bytes here; callers
+ * who care about non-QWERTY layouts should set `unshiftedCodepoint` on the
+ * KeyEvent themselves (via attachCustomKeyEventHandler or by calling
+ * KeyEncoder.encode directly).
+ */
+const CODE_TO_UNSHIFTED_CODEPOINT: Record<string, number> = {
+  KeyA: 0x61, // 'a'
+  KeyB: 0x62,
+  KeyC: 0x63,
+  KeyD: 0x64,
+  KeyE: 0x65,
+  KeyF: 0x66,
+  KeyG: 0x67,
+  KeyH: 0x68,
+  KeyI: 0x69,
+  KeyJ: 0x6a,
+  KeyK: 0x6b,
+  KeyL: 0x6c,
+  KeyM: 0x6d,
+  KeyN: 0x6e,
+  KeyO: 0x6f,
+  KeyP: 0x70,
+  KeyQ: 0x71,
+  KeyR: 0x72,
+  KeyS: 0x73,
+  KeyT: 0x74,
+  KeyU: 0x75,
+  KeyV: 0x76,
+  KeyW: 0x77,
+  KeyX: 0x78,
+  KeyY: 0x79,
+  KeyZ: 0x7a,
+  Digit0: 0x30,
+  Digit1: 0x31,
+  Digit2: 0x32,
+  Digit3: 0x33,
+  Digit4: 0x34,
+  Digit5: 0x35,
+  Digit6: 0x36,
+  Digit7: 0x37,
+  Digit8: 0x38,
+  Digit9: 0x39,
+  Minus: 0x2d, // '-'
+  Equal: 0x3d, // '='
+  BracketLeft: 0x5b, // '['
+  BracketRight: 0x5d, // ']'
+  Backslash: 0x5c, // '\'
+  Semicolon: 0x3b, // ';'
+  Quote: 0x27, // "'"
+  Backquote: 0x60, // '`'
+  Comma: 0x2c, // ','
+  Period: 0x2e, // '.'
+  Slash: 0x2f, // '/'
+  Space: 0x20,
+  // Numpad keys — Option composition applies here too on macOS
+  // (e.g. Option+Numpad1 → '¡'), so the fallback recovers '1' for the
+  // alt-prefix path. Mirrors the KEY_MAP Numpad set above; NumpadEnter is
+  // omitted because the encoder has a dedicated function-key path for
+  // Enter and never falls through to a printable byte.
+  Numpad0: 0x30,
+  Numpad1: 0x31,
+  Numpad2: 0x32,
+  Numpad3: 0x33,
+  Numpad4: 0x34,
+  Numpad5: 0x35,
+  Numpad6: 0x36,
+  Numpad7: 0x37,
+  Numpad8: 0x38,
+  Numpad9: 0x39,
+  NumpadDivide: 0x2f, // '/'
+  NumpadMultiply: 0x2a, // '*'
+  NumpadSubtract: 0x2d, // '-'
+  NumpadAdd: 0x2b, // '+'
+  NumpadDecimal: 0x2e, // '.'
 };
 
 /**
@@ -437,14 +525,37 @@ export class InputHandler {
       if (event.key.length === scalarLen) utf8 = event.key;
     }
 
+    // The unshifted codepoint is what the physical key would produce with no
+    // modifiers applied. The encoder uses it as a fallback when utf8 is
+    // either missing or too wide to fit in one byte — e.g. macOS Option+B
+    // gives event.key='∫' (3 UTF-8 bytes), but the user expects ESC+b.
+    // Sourced from a US-QWERTY fallback table keyed on event.code; callers
+    // with non-QWERTY users should override by wrapping InputHandler.
+    const unshiftedCodepoint = CODE_TO_UNSHIFTED_CODEPOINT[event.code];
+
     // Sync encoder options with terminal mode state before every encode.
-    // DEC mode 1 (DECCKM) → cursor-key application mode.
-    // DEC mode 66 (DECNKM) → keypad application mode.
+    // - DECCKM (mode 1)   → cursor-key application mode.
+    // - DECNKM (mode 66)  → keypad application mode.
+    // - alt_esc_prefix (mode 1036) → Alt+<key> encoded as ESC <key>.
+    //   Defaults true in Ghostty; terminal apps disable it to receive
+    //   meta-composed text unchanged. Without this sync, Alt+<letter>
+    //   would never be prefixed with ESC and macOS Option-composed
+    //   characters would reach the PTY verbatim.
     // syncEncoderOption skips the WASM round-trip when the value hasn't
     // changed since last keystroke, which is the common case.
     if (this.getModeCallback) {
-      this.syncEncoderOption(KeyEncoderOption.CURSOR_KEY_APPLICATION, this.getModeCallback(1));
-      this.syncEncoderOption(KeyEncoderOption.KEYPAD_KEY_APPLICATION, this.getModeCallback(66));
+      this.syncEncoderOption(
+        KeyEncoderOption.CURSOR_KEY_APPLICATION,
+        this.getModeCallback(TerminalMode.CURSOR_KEYS)
+      );
+      this.syncEncoderOption(
+        KeyEncoderOption.KEYPAD_KEY_APPLICATION,
+        this.getModeCallback(TerminalMode.KEYPAD_KEYS)
+      );
+      this.syncEncoderOption(
+        KeyEncoderOption.ALT_ESC_PREFIX,
+        this.getModeCallback(TerminalMode.ALT_ESC_PREFIX)
+      );
     }
 
     // mapKeyCode succeeded → we own this key. Prevent browser default
@@ -472,6 +583,7 @@ export class InputHandler {
         key,
         mods,
         utf8,
+        unshiftedCodepoint,
       });
     } catch (error) {
       console.warn('Failed to encode key:', event.code, error);

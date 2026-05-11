@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import { Ghostty } from './ghostty';
 import { InputHandler } from './input-handler';
-import { Key, KeyAction, Mods } from './types';
+import { Key, KeyAction, Mods, TerminalMode } from './types';
 
 // Mock DOM types for testing
 interface MockKeyboardEvent {
@@ -1012,6 +1012,69 @@ describe('InputHandler', () => {
       expect(dataReceived.length).toBe(1);
       // Alt+A often produces ESC a or similar
       expect(dataReceived[0].length).toBeGreaterThan(0);
+    });
+
+    test('Alt+letter emits ESC+letter when alt_esc_prefix (DEC 1036) is on', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        // getMode callback: turn on alt_esc_prefix, leave others off
+        (mode: number) => mode === TerminalMode.ALT_ESC_PREFIX
+      );
+
+      simulateKey(container, createKeyEvent('KeyB', 'b', { alt: true }));
+
+      expect(dataReceived).toEqual(['\x1bb']);
+    });
+
+    test('macOS Option+letter (composed char in event.key) emits ESC+letter', () => {
+      // On macOS, pressing Option+B in a browser yields event.key='∫' (the
+      // U+222B integral sign), but event.code remains 'KeyB'. Without the
+      // unshifted-codepoint fallback the encoder would write '∫' to the PTY,
+      // silently dropping the Alt shortcut. With the fallback it recovers
+      // the base key and emits ESC+b as expected by readline/editors.
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode: number) => mode === TerminalMode.ALT_ESC_PREFIX
+      );
+
+      simulateKey(container, createKeyEvent('KeyB', '∫', { alt: true }));
+
+      expect(dataReceived).toEqual(['\x1bb']);
+    });
+
+    test('macOS Option+Numpad1 (composed char) emits ESC+1', () => {
+      // macOS Option composition applies to NumLock-on numpad keys too:
+      // Option+Numpad1 → '¡' (U+00A1), code='Numpad1'. Verifies the
+      // Numpad entries in the unshifted-codepoint fallback table.
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode: number) => mode === TerminalMode.ALT_ESC_PREFIX
+      );
+
+      simulateKey(container, createKeyEvent('Numpad1', '¡', { alt: true }));
+
+      expect(dataReceived).toEqual(['\x1b1']);
     });
   });
 

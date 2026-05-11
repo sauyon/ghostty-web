@@ -288,6 +288,13 @@ export class KeyEncoder {
     this.exports.ghostty_key_event_set_action(eventPtr, event.action);
     this.exports.ghostty_key_event_set_key(eventPtr, event.key);
     this.exports.ghostty_key_event_set_mods(eventPtr, event.mods);
+    // Always set unshifted_codepoint (0 when absent) so a stale value from a
+    // previous encode on the cached eventPtr doesn't leak through. The
+    // encoder treats 0 as "not set" and falls back accordingly.
+    this.exports.ghostty_key_event_set_unshifted_codepoint(
+      eventPtr,
+      event.unshiftedCodepoint ?? 0
+    );
 
     // Encode utf8 directly into the WASM scratch buffer with encodeInto,
     // skipping the intermediate Uint8Array that TEXT_ENCODER.encode would

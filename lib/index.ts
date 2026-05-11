@@ -79,7 +79,7 @@ export {
   DirtyState,
   KeyEncoderOption,
 } from './ghostty';
-export { Key, KeyAction, Mods } from './types';
+export { Key, KeyAction, Mods, OptionAsAlt } from './types';
 export type { KeyEvent, GhosttyCell, RGB, Cursor, TerminalHandle } from './types';
 
 // Low-level components (for custom integrations)
