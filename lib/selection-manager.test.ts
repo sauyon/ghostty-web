@@ -636,26 +636,34 @@ describe('SelectionManager', () => {
   });
 
   describe('Touch selection (tap-and-hold)', () => {
-    // Helper to dispatch a TouchEvent with the given touches at (clientX, clientY)
-    // relative to the canvas.
+    type Point = { id?: number; x: number; y: number };
+    // Helper to dispatch a TouchEvent. `points` populates `touches` (fingers
+    // currently down). `changed`, when provided, populates `changedTouches`
+    // (fingers that triggered this specific event); otherwise mirrors `points`.
+    // For touchend/touchcancel: `points` should be remaining-down fingers
+    // and `changed` should be the lifted/cancelled fingers.
     function dispatchTouch(
       canvas: HTMLCanvasElement,
       type: 'touchstart' | 'touchmove' | 'touchend' | 'touchcancel',
-      points: Array<{ id?: number; x: number; y: number }>
+      points: Point[],
+      changed?: Point[]
     ): TouchEvent {
       const rect = canvas.getBoundingClientRect();
-      const touches = points.map((p) => ({
-        identifier: p.id ?? 0,
-        clientX: rect.left + p.x,
-        clientY: rect.top + p.y,
-        target: canvas,
-      }));
+      const toTouches = (pts: Point[]) =>
+        pts.map((p) => ({
+          identifier: p.id ?? 0,
+          clientX: rect.left + p.x,
+          clientY: rect.top + p.y,
+          target: canvas,
+        }));
+      const touches = toTouches(points);
+      const changedTouches = changed ? toTouches(changed) : touches;
       const ev = new TouchEvent(type, {
         bubbles: true,
         cancelable: true,
         touches: touches as any,
         targetTouches: touches as any,
-        changedTouches: touches as any,
+        changedTouches: changedTouches as any,
       });
       canvas.dispatchEvent(ev);
       return ev;
@@ -1000,6 +1008,85 @@ describe('SelectionManager', () => {
 
       // Plain tap (no long-press) - textarea should be focused for keyboard input
       expect(focusCalls).toBe(1);
+
+      term.dispose();
+    });
+
+    test('secondary finger lifting during selection does not commit', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+
+      let changeFires = 0;
+      selMgr.onSelectionChange(() => {
+        changeFires++;
+      });
+
+      // Primary finger long-press → selection active
+      const x = metrics.width / 2;
+      const y = metrics.height / 2;
+      dispatchTouch(canvas, 'touchstart', [{ id: 0, x, y }]);
+      await Bun.sleep(560);
+      expect(selMgr.isTouchSelecting).toBe(true);
+      const firesAfterSelection = changeFires;
+
+      // Secondary finger lifts (touchend with changedTouches=[id 1] while
+      // primary finger id 0 stays down). Should NOT commit the selection.
+      dispatchTouch(
+        canvas,
+        'touchend',
+        [{ id: 0, x, y }], // touches: primary still down
+        [{ id: 1, x: 100, y: 100 }] // changedTouches: secondary finger
+      );
+
+      expect(selMgr.isTouchSelecting).toBe(true);
+      expect(selMgr.hasSelection()).toBe(true);
+      expect(changeFires).toBe(firesAfterSelection); // no extra commit-fire
+
+      // Primary finger lifts - now we should commit
+      dispatchTouch(canvas, 'touchend', [], [{ id: 0, x, y }]);
+      expect(selMgr.isTouchSelecting).toBe(false);
+      expect(changeFires).toBeGreaterThan(firesAfterSelection);
+
+      term.dispose();
+    });
+
+    test('secondary finger cancellation does not abort selection', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+
+      const x = metrics.width / 2;
+      const y = metrics.height / 2;
+      dispatchTouch(canvas, 'touchstart', [{ id: 0, x, y }]);
+      await Bun.sleep(560);
+      expect(selMgr.isTouchSelecting).toBe(true);
+
+      // Secondary finger gets cancelled (palm rejection etc.)
+      dispatchTouch(
+        canvas,
+        'touchcancel',
+        [{ id: 0, x, y }], // primary still down
+        [{ id: 1, x: 100, y: 100 }] // secondary cancelled
+      );
+
+      // Primary selection must survive
+      expect(selMgr.isTouchSelecting).toBe(true);
+      expect(selMgr.hasSelection()).toBe(true);
 
       term.dispose();
     });

@@ -841,6 +841,11 @@ export class SelectionManager {
     canvas.addEventListener(
       'touchend',
       (e: TouchEvent) => {
+        // Only act when the finger that started this gesture lifts. A
+        // secondary finger lifting (multi-touch) would otherwise prematurely
+        // commit the primary finger's selection.
+        if (!this.isActiveTouchInList(e.changedTouches)) return;
+
         this.cancelLongPress();
         if (this.isTouchSelecting) {
           // Suppress synthesized mouse events that would clear the selection
@@ -864,7 +869,12 @@ export class SelectionManager {
 
     canvas.addEventListener(
       'touchcancel',
-      () => {
+      (e: TouchEvent) => {
+        // Only abort when the OS cancels the primary finger. A cancellation
+        // of a secondary finger (e.g. palm rejection on a second touch)
+        // should not drop the active selection.
+        if (!this.isActiveTouchInList(e.changedTouches)) return;
+
         // touchcancel = OS interrupted the gesture (notification, phone call,
         // system gesture). Treat as an abort: drop any partial selection
         // instead of committing it to the clipboard.
@@ -890,6 +900,16 @@ export class SelectionManager {
       if (t.identifier === this.activeTouchId) return t;
     }
     return null;
+  }
+
+  /**
+   * Return true iff the active touch (the finger that started this gesture)
+   * is present in the given TouchList. For touchend/touchcancel handlers
+   * the relevant list is `event.changedTouches` — the fingers that just
+   * lifted or were cancelled.
+   */
+  private isActiveTouchInList(touches: TouchList): boolean {
+    return this.findActiveTouch(touches) !== null;
   }
 
   /**
