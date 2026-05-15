@@ -396,6 +396,10 @@ export class Terminal implements ITerminalCore {
       this.canvas = document.createElement('canvas');
       this.canvas.style.display = 'block';
       this.canvas.style.cursor = 'text';
+      // Suppress iOS Safari's long-press "Copy Image"/"Save Image" callout so
+      // our tap-and-hold selection can take over the gesture instead.
+      // (Not in lib.dom.d.ts; setProperty avoids both the type error and a cast.)
+      this.canvas.style.setProperty('-webkit-touch-callout', 'none');
 
       parent.appendChild(this.canvas);
 
@@ -429,8 +433,12 @@ export class Terminal implements ITerminalCore {
         ev.preventDefault();
         textarea.focus();
       });
-      // Mobile: touchend with preventDefault to suppress iOS caret
+      // Mobile: touchend with preventDefault to suppress iOS caret.
+      // Skip when a long-press selection is active — SelectionManager keeps
+      // focus on the canvas parent for keyboard input, and stealing focus to
+      // the hidden textarea here would break that.
       this.canvas.addEventListener('touchend', (ev) => {
+        if (this.selectionManager?.hasSelection()) return;
         ev.preventDefault();
         textarea.focus();
       });

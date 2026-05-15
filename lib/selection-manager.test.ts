@@ -634,4 +634,416 @@ describe('SelectionManager', () => {
       term.dispose();
     });
   });
+
+  describe('Touch selection (tap-and-hold)', () => {
+    // Helper to dispatch a TouchEvent with the given touches at (clientX, clientY)
+    // relative to the canvas.
+    function dispatchTouch(
+      canvas: HTMLCanvasElement,
+      type: 'touchstart' | 'touchmove' | 'touchend' | 'touchcancel',
+      points: Array<{ id?: number; x: number; y: number }>
+    ): TouchEvent {
+      const rect = canvas.getBoundingClientRect();
+      const touches = points.map((p) => ({
+        identifier: p.id ?? 0,
+        clientX: rect.left + p.x,
+        clientY: rect.top + p.y,
+        target: canvas,
+      }));
+      const ev = new TouchEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        touches: touches as any,
+        targetTouches: touches as any,
+        changedTouches: touches as any,
+      });
+      canvas.dispatchEvent(ev);
+      return ev;
+    }
+
+    test('touchstart arms long-press timer; long-press creates selection of word at touch', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+
+      // Touch the cell over the second letter of "Hello"
+      const x = metrics.width * 1 + metrics.width / 2;
+      const y = metrics.height * 0 + metrics.height / 2;
+
+      expect(selMgr.hasSelection()).toBe(false);
+      dispatchTouch(canvas, 'touchstart', [{ x, y }]);
+      expect(selMgr.hasSelection()).toBe(false); // long-press hasn't fired yet
+      expect(selMgr.longPressTimer).not.toBeNull();
+
+      // Wait for long-press timer (500ms) to fire
+      await Bun.sleep(560);
+
+      expect(selMgr.isTouchSelecting).toBe(true);
+      expect(selMgr.hasSelection()).toBe(true);
+      // Selection should be the word "Hello"
+      expect(selMgr.getSelection()).toBe('Hello');
+
+      term.dispose();
+    });
+
+    test('touchmove past tolerance before long-press cancels the timer', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const canvas: HTMLCanvasElement = (term as any).renderer.getCanvas();
+
+      dispatchTouch(canvas, 'touchstart', [{ x: 20, y: 20 }]);
+      expect(selMgr.longPressTimer).not.toBeNull();
+
+      // Move >10px - tolerance is 10px
+      dispatchTouch(canvas, 'touchmove', [{ x: 60, y: 60 }]);
+      expect(selMgr.longPressTimer).toBeNull();
+
+      // Wait past the long-press window to confirm it never fires
+      await Bun.sleep(560);
+      expect(selMgr.isTouchSelecting).toBe(false);
+      expect(selMgr.hasSelection()).toBe(false);
+
+      term.dispose();
+    });
+
+    test('multi-touch (pinch/zoom) cancels long-press', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const canvas: HTMLCanvasElement = (term as any).renderer.getCanvas();
+
+      dispatchTouch(canvas, 'touchstart', [{ x: 20, y: 20 }]);
+      expect(selMgr.longPressTimer).not.toBeNull();
+
+      // Second finger touches down - should cancel long-press
+      dispatchTouch(canvas, 'touchstart', [
+        { id: 0, x: 20, y: 20 },
+        { id: 1, x: 100, y: 100 },
+      ]);
+      expect(selMgr.longPressTimer).toBeNull();
+
+      term.dispose();
+    });
+
+    test('touchmove during active selection extends it', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+
+      // Long-press on "H" of Hello
+      const startX = metrics.width * 0 + metrics.width / 2;
+      const y = metrics.height / 2;
+      dispatchTouch(canvas, 'touchstart', [{ x: startX, y }]);
+      await Bun.sleep(560);
+      expect(selMgr.isTouchSelecting).toBe(true);
+      const initialText = selMgr.getSelection();
+      expect(initialText).toBe('Hello');
+
+      // Drag finger to column 10 (middle of "World") to extend selection
+      const endX = metrics.width * 10 + metrics.width / 2;
+      dispatchTouch(canvas, 'touchmove', [{ x: endX, y }]);
+
+      // Selection end should now be at column 10
+      expect(selMgr.selectionEnd.col).toBe(10);
+      const extended = selMgr.getSelection();
+      expect(extended.length).toBeGreaterThan(initialText.length);
+      expect(extended).toContain('Hello');
+      expect(extended).toContain('Wo');
+
+      term.dispose();
+    });
+
+    test('touchend without long-press leaves no selection', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const canvas: HTMLCanvasElement = (term as any).renderer.getCanvas();
+
+      dispatchTouch(canvas, 'touchstart', [{ x: 20, y: 20 }]);
+      // Immediately end - simulates a tap
+      dispatchTouch(canvas, 'touchend', [{ x: 20, y: 20 }]);
+      expect(selMgr.longPressTimer).toBeNull();
+      expect(selMgr.hasSelection()).toBe(false);
+
+      term.dispose();
+    });
+
+    test('touchend after long-press finalizes selection and fires change event', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+
+      let changeFires = 0;
+      selMgr.onSelectionChange(() => {
+        changeFires++;
+      });
+
+      const x = metrics.width / 2;
+      const y = metrics.height / 2;
+      dispatchTouch(canvas, 'touchstart', [{ x, y }]);
+      await Bun.sleep(560);
+
+      const firesBeforeEnd = changeFires;
+      dispatchTouch(canvas, 'touchend', [{ x, y }]);
+
+      expect(selMgr.isTouchSelecting).toBe(false);
+      expect(selMgr.hasSelection()).toBe(true);
+      // touchend should fire one final selection-change event with the copied text
+      expect(changeFires).toBeGreaterThan(firesBeforeEnd);
+
+      term.dispose();
+    });
+
+    test('starting a new touch clears prior selection', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const canvas: HTMLCanvasElement = (term as any).renderer.getCanvas();
+
+      // Pre-existing programmatic selection
+      const scrollbackLen = term.wasmTerm!.getScrollbackLength();
+      setSelectionAbsolute(term, 0, scrollbackLen, 4, scrollbackLen);
+      expect(selMgr.hasSelection()).toBe(true);
+
+      // A new tap (no long-press) should clear it
+      dispatchTouch(canvas, 'touchstart', [{ x: 5, y: 5 }]);
+      expect(selMgr.hasSelection()).toBe(false);
+
+      term.dispose();
+    });
+
+    test('dispose cancels pending long-press timer', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const canvas: HTMLCanvasElement = (term as any).renderer.getCanvas();
+
+      dispatchTouch(canvas, 'touchstart', [{ x: 5, y: 5 }]);
+      expect(selMgr.longPressTimer).not.toBeNull();
+
+      term.dispose();
+      expect(selMgr.longPressTimer).toBeNull();
+
+      // Even after the would-be long-press window, nothing fires
+      await Bun.sleep(560);
+      expect(selMgr.isTouchSelecting).toBe(false);
+    });
+
+    test('rapid touchstart cancels prior pending long-press timer', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const canvas: HTMLCanvasElement = (term as any).renderer.getCanvas();
+
+      dispatchTouch(canvas, 'touchstart', [{ x: 5, y: 5 }]);
+      const firstTimer = selMgr.longPressTimer;
+      expect(firstTimer).not.toBeNull();
+
+      // Second touchstart arrives before the first timer fires - the prior
+      // timer should be cancelled so we never get a double-fire.
+      dispatchTouch(canvas, 'touchstart', [{ x: 5, y: 5 }]);
+      const secondTimer = selMgr.longPressTimer;
+      expect(secondTimer).not.toBeNull();
+      expect(secondTimer).not.toBe(firstTimer);
+
+      term.dispose();
+    });
+
+    test('touchcancel during selection aborts (does not commit)', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+
+      const x = metrics.width / 2;
+      const y = metrics.height / 2;
+      dispatchTouch(canvas, 'touchstart', [{ x, y }]);
+      await Bun.sleep(560);
+      expect(selMgr.isTouchSelecting).toBe(true);
+      expect(selMgr.hasSelection()).toBe(true);
+
+      // OS interrupts the gesture - selection should be dropped
+      dispatchTouch(canvas, 'touchcancel', [{ x, y }]);
+      expect(selMgr.isTouchSelecting).toBe(false);
+      expect(selMgr.hasSelection()).toBe(false);
+
+      term.dispose();
+    });
+
+    test('clearSelection resets dragThresholdMet so anti-flash starts fresh', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+
+      // Simulate the state that startTouchSelection leaves behind
+      selMgr.dragThresholdMet = true;
+      selMgr.selectionStart = { col: 0, absoluteRow: 0 };
+      selMgr.selectionEnd = { col: 4, absoluteRow: 0 };
+      expect(selMgr.hasSelection()).toBe(true);
+
+      selMgr.clearSelection();
+      expect(selMgr.dragThresholdMet).toBe(false);
+
+      term.dispose();
+    });
+
+    test('terminal touchend does not steal focus when a touch selection is active', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+      const textarea = term.textarea!;
+
+      // Spy on textarea.focus to detect terminal.ts's would-be focus call
+      let focusCalls = 0;
+      const originalFocus = textarea.focus.bind(textarea);
+      textarea.focus = () => {
+        focusCalls++;
+        originalFocus();
+      };
+
+      const x = metrics.width / 2;
+      const y = metrics.height / 2;
+      dispatchTouch(canvas, 'touchstart', [{ x, y }]);
+      await Bun.sleep(560);
+      expect(selMgr.hasSelection()).toBe(true);
+
+      focusCalls = 0;
+      dispatchTouch(canvas, 'touchend', [{ x, y }]);
+
+      // terminal.ts's touchend should have returned early without focusing
+      // the hidden textarea, leaving keyboard focus on the canvas parent.
+      expect(focusCalls).toBe(0);
+      expect(selMgr.hasSelection()).toBe(true);
+    });
+
+    test('terminal touchend focuses textarea on a plain tap (no selection)', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+
+      const canvas: HTMLCanvasElement = (term as any).renderer.getCanvas();
+      const textarea = term.textarea!;
+
+      let focusCalls = 0;
+      const originalFocus = textarea.focus.bind(textarea);
+      textarea.focus = () => {
+        focusCalls++;
+        originalFocus();
+      };
+
+      dispatchTouch(canvas, 'touchstart', [{ x: 5, y: 5 }]);
+      dispatchTouch(canvas, 'touchend', [{ x: 5, y: 5 }]);
+
+      // Plain tap (no long-press) - textarea should be focused for keyboard input
+      expect(focusCalls).toBe(1);
+
+      term.dispose();
+    });
+
+    test('touchmove past canvas bottom edge triggers downward auto-scroll', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24, scrollback: 1000 });
+      term.open(container);
+      // Fill scrollback so there is content to scroll into
+      for (let i = 0; i < 100; i++) {
+        term.write(`Line ${i}\r\n`);
+      }
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+
+      // happy-dom returns 0 for clientHeight (no real layout); stub it so the
+      // auto-scroll edge detection has a sensible viewport size to work with.
+      const visibleHeight = metrics.height * 24;
+      Object.defineProperty(canvas, 'clientHeight', {
+        configurable: true,
+        get: () => visibleHeight,
+      });
+
+      // Long-press near the middle of the canvas (away from both edges)
+      const middleY = visibleHeight / 2;
+      dispatchTouch(canvas, 'touchstart', [{ x: metrics.width / 2, y: middleY }]);
+      await Bun.sleep(560);
+      expect(selMgr.isTouchSelecting).toBe(true);
+
+      // Drag finger past the bottom edge - should kick off downward auto-scroll
+      const bottomY = visibleHeight + 10;
+      dispatchTouch(canvas, 'touchmove', [{ x: metrics.width / 2, y: bottomY }]);
+      expect(selMgr.autoScrollDirection).toBe(1);
+      expect(selMgr.autoScrollInterval).not.toBeNull();
+
+      // Pull finger back to the middle - auto-scroll should stop
+      dispatchTouch(canvas, 'touchmove', [{ x: metrics.width / 2, y: middleY }]);
+      expect(selMgr.autoScrollDirection).toBe(0);
+
+      term.dispose();
+    });
+  });
 });
