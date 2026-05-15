@@ -1091,6 +1091,116 @@ describe('SelectionManager', () => {
       term.dispose();
     });
 
+    test('long-press on a link activates instead of selecting', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+
+      // Replace the wired-up activation callback with a probe that always
+      // consumes the gesture, regardless of position.
+      let probeCalls = 0;
+      let probedCol = -1;
+      let probedRow = -1;
+      selMgr.onLongPressActivation = (col: number, row: number) => {
+        probeCalls++;
+        probedCol = col;
+        probedRow = row;
+        return true; // consumed → no selection
+      };
+
+      const x = metrics.width * 2 + metrics.width / 2;
+      const y = metrics.height / 2;
+      dispatchTouch(canvas, 'touchstart', [{ x, y }]);
+      await Bun.sleep(560);
+
+      // Probe was called with the touched cell
+      expect(probeCalls).toBe(1);
+      expect(probedCol).toBe(2);
+      expect(probedRow).toBeGreaterThanOrEqual(0);
+
+      // Gesture consumed - no selection state
+      expect(selMgr.isTouchSelecting).toBe(false);
+      expect(selMgr.hasSelection()).toBe(false);
+
+      term.dispose();
+    });
+
+    test('long-press falls through to word selection when callback returns false', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+
+      let probeCalls = 0;
+      selMgr.onLongPressActivation = () => {
+        probeCalls++;
+        return false; // not a link → fall through
+      };
+
+      const x = metrics.width / 2;
+      const y = metrics.height / 2;
+      dispatchTouch(canvas, 'touchstart', [{ x, y }]);
+      await Bun.sleep(560);
+
+      expect(probeCalls).toBe(1);
+      expect(selMgr.isTouchSelecting).toBe(true);
+      expect(selMgr.getSelection()).toBe('Hello');
+
+      term.dispose();
+    });
+
+    test('async activation callback is awaited; touch lifted during probe does not select', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+      term.write('Hello World\r\n');
+
+      const selMgr = (term as any).selectionManager;
+      const renderer = (term as any).renderer;
+      const canvas: HTMLCanvasElement = renderer.getCanvas();
+      const metrics = renderer.getMetrics();
+
+      // Callback delays so we can lift the finger mid-probe
+      let resolveProbe: (v: boolean) => void;
+      selMgr.onLongPressActivation = () =>
+        new Promise<boolean>((resolve) => {
+          resolveProbe = resolve;
+        });
+
+      const x = metrics.width / 2;
+      const y = metrics.height / 2;
+      dispatchTouch(canvas, 'touchstart', [{ x, y }]);
+      await Bun.sleep(560);
+
+      // Long-press fired and is now awaiting the link probe. Lift finger.
+      dispatchTouch(canvas, 'touchend', [], [{ x, y }]);
+      expect(selMgr.activeTouchId).toBe(null);
+
+      // Resolve the probe with "not a link" - but the gesture was already
+      // abandoned, so SelectionManager should not start a word selection.
+      resolveProbe!(false);
+      await Bun.sleep(10);
+
+      expect(selMgr.isTouchSelecting).toBe(false);
+      expect(selMgr.hasSelection()).toBe(false);
+
+      term.dispose();
+    });
+
     test('touchmove past canvas bottom edge triggers downward auto-scroll', async () => {
       if (!container) return;
 

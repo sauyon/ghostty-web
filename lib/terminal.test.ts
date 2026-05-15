@@ -3225,3 +3225,118 @@ describe('Injected wasmTerm (ITerminalOptions.wasmTerm)', () => {
     expect(wasmTermRef).toBeDefined();
   });
 });
+
+describe('Long-press link activation (mobile)', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  function dispatchTouchStart(canvas: HTMLCanvasElement, x: number, y: number): void {
+    const rect = canvas.getBoundingClientRect();
+    const touches = [
+      { identifier: 0, clientX: rect.left + x, clientY: rect.top + y, target: canvas },
+    ];
+    const ev = new TouchEvent('touchstart', {
+      bubbles: true,
+      cancelable: true,
+      touches: touches as any,
+      targetTouches: touches as any,
+      changedTouches: touches as any,
+    });
+    canvas.dispatchEvent(ev);
+  }
+
+  test('long-press on a registered link activates it and does not select', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+    term.write('Hello World here\r\n');
+
+    let activated = 0;
+    // Register a provider that surfaces a link covering cols 0-5 on row 0
+    term.registerLinkProvider({
+      provideLinks(_y, callback) {
+        callback([
+          {
+            text: 'test://link',
+            range: { start: { x: 0, y: 0 }, end: { x: 5, y: 0 } },
+            activate: () => {
+              activated++;
+            },
+          },
+        ]);
+      },
+    });
+
+    const renderer = (term as any).renderer;
+    const canvas: HTMLCanvasElement = renderer.getCanvas();
+    const metrics = renderer.getMetrics();
+
+    // Touch inside the link range (col 2)
+    const x = metrics.width * 2 + metrics.width / 2;
+    const y = metrics.height / 2;
+    dispatchTouchStart(canvas, x, y);
+    await Bun.sleep(560);
+
+    expect(activated).toBe(1);
+    // No selection because the gesture was consumed by activation
+    const selMgr = (term as any).selectionManager;
+    expect(selMgr.hasSelection()).toBe(false);
+    expect(selMgr.isTouchSelecting).toBe(false);
+
+    term.dispose();
+  });
+
+  test('long-press off a link still selects the word', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+    term.write('Hello World here\r\n');
+
+    let activated = 0;
+    term.registerLinkProvider({
+      provideLinks(_y, callback) {
+        callback([
+          {
+            text: 'test://link',
+            range: { start: { x: 0, y: 0 }, end: { x: 5, y: 0 } },
+            activate: () => {
+              activated++;
+            },
+          },
+        ]);
+      },
+    });
+
+    const renderer = (term as any).renderer;
+    const canvas: HTMLCanvasElement = renderer.getCanvas();
+    const metrics = renderer.getMetrics();
+
+    // Touch past the link range (col 12, inside "here")
+    const x = metrics.width * 12 + metrics.width / 2;
+    const y = metrics.height / 2;
+    dispatchTouchStart(canvas, x, y);
+    await Bun.sleep(560);
+
+    expect(activated).toBe(0);
+    const selMgr = (term as any).selectionManager;
+    expect(selMgr.hasSelection()).toBe(true);
+    expect(selMgr.getSelection().length).toBeGreaterThan(0);
+
+    term.dispose();
+  });
+});
