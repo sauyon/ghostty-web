@@ -507,12 +507,16 @@ export class Terminal implements ITerminalCore {
         mouseConfig
       );
 
-      // Create selection manager (pass textarea for context menu positioning)
+      // Create selection manager (pass textarea for context menu positioning).
+      // The long-press activation callback lets SelectionManager give a link
+      // first refusal on the gesture: long-press on a hyperlink opens it,
+      // long-press on plain text selects the word.
       this.selectionManager = new SelectionManager(
         this,
         this.renderer,
         this.wasmTerm,
-        this.textarea
+        this.textarea,
+        (col, absoluteRow) => this.activateLinkAt(col, absoluteRow)
       );
 
       // Connect selection manager to renderer
@@ -1591,6 +1595,27 @@ export class Terminal implements ITerminalCore {
       }
     }
   };
+
+  /**
+   * Activate the link at the given buffer position, if any. Used by
+   * SelectionManager's long-press handler — on touch devices, long-press is
+   * the mobile equivalent of cmd-click and should follow the hyperlink
+   * instead of starting a text selection.
+   *
+   * Returns true if a link was activated, false otherwise.
+   */
+  private async activateLinkAt(col: number, bufferRow: number): Promise<boolean> {
+    if (!this.linkDetector) return false;
+    const link = await this.linkDetector.getLinkAt(col, bufferRow);
+    if (!link) return false;
+    // Provider activate handlers gate on ctrl/meta (the desktop "this is an
+    // intentional follow-the-link click" signal). Synthesize a click event
+    // with metaKey set so the gate is satisfied — long-press is the explicit
+    // mobile equivalent.
+    const synthEvent = new MouseEvent('click', { metaKey: true, bubbles: false });
+    link.activate(synthEvent);
+    return true;
+  }
 
   /**
    * Handle wheel events for scrolling (Phase 2)

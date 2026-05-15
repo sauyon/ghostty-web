@@ -108,16 +108,33 @@ export class SelectionManager {
   private static readonly AUTO_SCROLL_SPEED = 3; // lines per interval
   private static readonly AUTO_SCROLL_INTERVAL = 50; // ms between scroll steps
 
+  /**
+   * Optional hook invoked when a long-press fires. The owner (Terminal) can
+   * use this to detect a link at the touched cell and activate it instead of
+   * starting a word selection — long-press is the mobile equivalent of
+   * cmd-click. Should return true if the gesture was consumed (link
+   * activated); falsy means fall through to the default word-selection
+   * behavior.
+   */
+  private onLongPressActivation:
+    | ((col: number, absoluteRow: number) => Promise<boolean> | boolean)
+    | undefined;
+
   constructor(
     terminal: Terminal,
     renderer: CanvasRenderer,
     wasmTerm: GhosttyTerminal,
-    textarea: HTMLTextAreaElement
+    textarea: HTMLTextAreaElement,
+    onLongPressActivation?: (
+      col: number,
+      absoluteRow: number
+    ) => Promise<boolean> | boolean
   ) {
     this.terminal = terminal;
     this.renderer = renderer;
     this.wasmTerm = wasmTerm;
     this.textarea = textarea;
+    this.onLongPressActivation = onLongPressActivation;
 
     // Attach mouse event listeners
     this.attachEventListeners();
@@ -923,12 +940,15 @@ export class SelectionManager {
   }
 
   /**
-   * Begin a touch selection after long-press fires. Selects the word under the
-   * touch point (matching native mobile selection UX), and arms the drag-to-extend
-   * state so subsequent touchmove events extend the selection.
+   * Begin a touch selection after long-press fires. First gives the owner a
+   * chance to consume the gesture for link activation (long-press on a
+   * hyperlink should open it, not select the URL text). Otherwise selects
+   * the word under the touch point and arms the drag-to-extend state.
    */
-  private startTouchSelection(x: number, y: number): void {
-    // Haptic feedback when available (Android Chrome supports this; iOS does not)
+  private async startTouchSelection(x: number, y: number): Promise<void> {
+    // Haptic feedback when available (Android Chrome supports this; iOS does
+    // not). Fires for both the link-activate and word-select paths since
+    // either outcome means the gesture was recognized.
     try {
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
         navigator.vibrate(10);
@@ -945,6 +965,21 @@ export class SelectionManager {
 
     const cell = this.pixelToCell(x, y);
     const absoluteRow = this.viewportRowToAbsolute(cell.row);
+
+    // Give the owner a chance to consume the long-press for link activation.
+    // If the user lifts or restarts the gesture while the probe is pending,
+    // bail out — activeTouchId comparison detects that.
+    if (this.onLongPressActivation) {
+      const touchIdAtProbe = this.activeTouchId;
+      try {
+        const consumed = await this.onLongPressActivation(cell.col, absoluteRow);
+        if (this.activeTouchId !== touchIdAtProbe) return;
+        if (consumed) return;
+      } catch {
+        // Probe failure - fall through to word selection
+      }
+    }
+
     const word = this.getWordAtCell(cell.col, cell.row);
 
     if (word) {
