@@ -62,6 +62,15 @@ export class SelectionManager {
   private boundClickHandler: ((e: MouseEvent) => void) | null = null;
   private boundDocumentMouseMoveHandler: ((e: MouseEvent) => void) | null = null;
 
+  // Touch selection state (tap-and-hold to select on mobile)
+  private longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  private touchStartX: number = 0;
+  private touchStartY: number = 0;
+  private isTouchSelecting: boolean = false;
+  private activeTouchId: number | null = null;
+  private static readonly LONG_PRESS_MS = 500;
+  private static readonly LONG_PRESS_MOVE_TOLERANCE_PX = 10;
+
   // Auto-scroll state for drag selection
   private autoScrollInterval: ReturnType<typeof setInterval> | null = null;
   private autoScrollDirection: number = 0; // -1 = up, 0 = none, 1 = down
@@ -250,6 +259,11 @@ export class SelectionManager {
     this.selectionStart = null;
     this.selectionEnd = null;
     this.isSelecting = false;
+    // Reset so the anti-flash check (hasSelection during mouse drag) starts
+    // fresh next time. Without this, a touch selection followed by clearing
+    // would leave dragThresholdMet=true and bypass anti-flash on a later
+    // programmatic select() restore.
+    this.dragThresholdMet = false;
 
     // Force redraw of previously selected lines to clear the overlay
     this.requestRender();
@@ -392,6 +406,11 @@ export class SelectionManager {
 
     // Stop auto-scroll if active
     this.stopAutoScroll();
+
+    // Cancel any pending long-press timer
+    this.cancelLongPress();
+    this.isTouchSelecting = false;
+    this.activeTouchId = null;
 
     // Clean up document event listener
     if (this.boundMouseUpHandler) {
@@ -749,6 +768,179 @@ export class SelectionManager {
     };
 
     document.addEventListener('click', this.boundClickHandler);
+
+    // Touch handlers - tap-and-hold to select on mobile
+    canvas.addEventListener(
+      'touchstart',
+      (e: TouchEvent) => {
+        // Only act on single-finger touch; multi-touch is for pinch/scroll
+        if (e.touches.length !== 1) {
+          this.cancelLongPress();
+          return;
+        }
+
+        // Clear any pending long-press from a prior touch sequence so we
+        // don't double-fire (e.g. rapid taps before the previous timer
+        // resolved).
+        this.cancelLongPress();
+
+        const touch = e.touches[0];
+        const rect = canvas.getBoundingClientRect();
+        this.activeTouchId = touch.identifier;
+        this.touchStartX = touch.clientX - rect.left;
+        this.touchStartY = touch.clientY - rect.top;
+        this.isTouchSelecting = false;
+
+        // Clear any existing selection on new touch (matches mousedown behavior)
+        if (this.hasSelection()) {
+          this.clearSelection();
+        }
+
+        // Start long-press timer
+        this.longPressTimer = setTimeout(() => {
+          this.longPressTimer = null;
+          this.startTouchSelection(this.touchStartX, this.touchStartY);
+        }, SelectionManager.LONG_PRESS_MS);
+      },
+      { passive: true }
+    );
+
+    canvas.addEventListener(
+      'touchmove',
+      (e: TouchEvent) => {
+        const touch = this.findActiveTouch(e.touches);
+        if (!touch) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const x = touch.clientX - rect.left;
+        const y = touch.clientY - rect.top;
+
+        if (this.isTouchSelecting) {
+          // In selection drag - prevent scrolling and extend selection
+          e.preventDefault();
+          this.markCurrentSelectionDirty();
+          const cell = this.pixelToCell(x, y);
+          const absoluteRow = this.viewportRowToAbsolute(cell.row);
+          this.selectionEnd = { col: cell.col, absoluteRow };
+          this.requestRender();
+          // Pull in more content when finger reaches/passes the canvas edges
+          this.updateAutoScroll(y, canvas.clientHeight);
+        } else if (this.longPressTimer !== null) {
+          // Waiting on long-press to fire - cancel if finger moves too much
+          const dx = x - this.touchStartX;
+          const dy = y - this.touchStartY;
+          const tol = SelectionManager.LONG_PRESS_MOVE_TOLERANCE_PX;
+          if (dx * dx + dy * dy > tol * tol) {
+            this.cancelLongPress();
+          }
+        }
+      },
+      { passive: false }
+    );
+
+    canvas.addEventListener(
+      'touchend',
+      (e: TouchEvent) => {
+        this.cancelLongPress();
+        if (this.isTouchSelecting) {
+          // Suppress synthesized mouse events that would clear the selection
+          e.preventDefault();
+          this.isTouchSelecting = false;
+          this.stopAutoScroll();
+          this.activeTouchId = null;
+          if (this.hasSelection()) {
+            const text = this.getSelection();
+            if (text) {
+              this.copyToClipboard(text);
+              this.selectionChangedEmitter.fire();
+            }
+          }
+        } else {
+          this.activeTouchId = null;
+        }
+      },
+      { passive: false }
+    );
+
+    canvas.addEventListener(
+      'touchcancel',
+      () => {
+        // touchcancel = OS interrupted the gesture (notification, phone call,
+        // system gesture). Treat as an abort: drop any partial selection
+        // instead of committing it to the clipboard.
+        this.cancelLongPress();
+        if (this.isTouchSelecting) {
+          this.isTouchSelecting = false;
+          this.stopAutoScroll();
+          this.clearSelection();
+        }
+        this.activeTouchId = null;
+      },
+      { passive: true }
+    );
+  }
+
+  /**
+   * Find the touch with the active identifier in a TouchList
+   */
+  private findActiveTouch(touches: TouchList): Touch | null {
+    if (this.activeTouchId === null) return null;
+    for (let i = 0; i < touches.length; i++) {
+      const t = touches[i];
+      if (t.identifier === this.activeTouchId) return t;
+    }
+    return null;
+  }
+
+  /**
+   * Cancel the pending long-press timer (if any)
+   */
+  private cancelLongPress(): void {
+    if (this.longPressTimer !== null) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+  }
+
+  /**
+   * Begin a touch selection after long-press fires. Selects the word under the
+   * touch point (matching native mobile selection UX), and arms the drag-to-extend
+   * state so subsequent touchmove events extend the selection.
+   */
+  private startTouchSelection(x: number, y: number): void {
+    // Haptic feedback when available (Android Chrome supports this; iOS does not)
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate(10);
+      }
+    } catch {
+      // Ignore - some browsers throw on vibrate when not allowed
+    }
+
+    // Focus terminal so subsequent keyboard input goes to the right place
+    const canvas = this.renderer.getCanvas();
+    if (canvas.parentElement) {
+      canvas.parentElement.focus();
+    }
+
+    const cell = this.pixelToCell(x, y);
+    const absoluteRow = this.viewportRowToAbsolute(cell.row);
+    const word = this.getWordAtCell(cell.col, cell.row);
+
+    if (word) {
+      this.selectionStart = { col: word.startCol, absoluteRow };
+      this.selectionEnd = { col: word.endCol, absoluteRow };
+    } else {
+      // Not on a word - select the single cell so drag can extend from there
+      this.selectionStart = { col: cell.col, absoluteRow };
+      this.selectionEnd = { col: cell.col, absoluteRow };
+    }
+
+    this.isTouchSelecting = true;
+    // Force hasSelection() to return true even though we haven't dragged yet
+    this.dragThresholdMet = true;
+    this.requestRender();
+    this.selectionChangedEmitter.fire();
   }
 
   /**
@@ -797,7 +989,7 @@ export class SelectionManager {
 
     // Start scrolling interval
     this.autoScrollInterval = setInterval(() => {
-      if (!this.isSelecting) {
+      if (!this.isSelecting && !this.isTouchSelecting) {
         this.stopAutoScroll();
         return;
       }
