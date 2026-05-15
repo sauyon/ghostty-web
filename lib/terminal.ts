@@ -591,8 +591,7 @@ export class Terminal implements ITerminalCore {
     // bump viewportY by the same amount to keep the viewport locked on
     // the same content.
     const savedViewportY = this.viewportY;
-    const savedScrollback = savedViewportY > 0
-      ? this.wasmTerm!.getScrollbackLength() : 0;
+    const savedScrollback = savedViewportY > 0 ? this.wasmTerm!.getScrollbackLength() : 0;
 
     // Write directly to WASM terminal (handles VT parsing internally)
     this.wasmTerm!.write(data);
@@ -619,7 +618,12 @@ export class Terminal implements ITerminalCore {
     if (savedViewportY > 0) {
       const newScrollback = this.wasmTerm!.getScrollbackLength();
       const delta = newScrollback - savedScrollback;
-      this.viewportY = Math.min(savedViewportY + Math.max(0, delta), newScrollback);
+      const newViewportY = Math.max(0, Math.min(savedViewportY + delta, newScrollback));
+      if (newViewportY !== savedViewportY) {
+        this.viewportY = newViewportY;
+        this.scrollEmitter.fire(this.viewportY);
+        if (newScrollback > 0) this.showScrollbar();
+      }
     }
 
     // Check for title changes (OSC 0, 1, 2 sequences)
