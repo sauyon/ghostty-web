@@ -27,7 +27,15 @@ type Op =
   | { kind: 'beginPath' }
   | { kind: 'moveTo'; x: number; y: number }
   | { kind: 'lineTo'; x: number; y: number }
-  | { kind: 'bezierCurveTo'; cp1x: number; cp1y: number; cp2x: number; cp2y: number; x: number; y: number }
+  | {
+      kind: 'bezierCurveTo';
+      cp1x: number;
+      cp1y: number;
+      cp2x: number;
+      cp2y: number;
+      x: number;
+      y: number;
+    }
   | { kind: 'stroke' }
   | { kind: 'translate'; x: number; y: number };
 
@@ -45,14 +53,7 @@ interface RecordingCtx {
   beginPath(): void;
   moveTo(x: number, y: number): void;
   lineTo(x: number, y: number): void;
-  bezierCurveTo(
-    cp1x: number,
-    cp1y: number,
-    cp2x: number,
-    cp2y: number,
-    x: number,
-    y: number
-  ): void;
+  bezierCurveTo(cp1x: number, cp1y: number, cp2x: number, cp2y: number, x: number, y: number): void;
   stroke(): void;
   translate(x: number, y: number): void;
 }
@@ -188,9 +189,7 @@ describe('box-drawing', () => {
         // fillRect would slip through the looser `o.kind === ...`
         // check.
         const drewSomething = ctx.ops.some(
-          (o) =>
-            (o.kind === 'fillRect' && o.w > 0 && o.h > 0) ||
-            o.kind === 'stroke'
+          (o) => (o.kind === 'fillRect' && o.w > 0 && o.h > 0) || o.kind === 'stroke'
         );
         if (!handled || !drewSomething) missing.push(cp);
       }
