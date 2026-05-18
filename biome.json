@@ -39,17 +39,5 @@
   },
   "files": {
     "ignore": ["node_modules", "dist", "coverage", "*.wasm", ".git", ".vite", "bun.lock"]
-  },
-  "overrides": [
-    {
-      "include": ["lib/renderer.ts"],
-      "linter": {
-        "rules": {
-          "complexity": {
-            "useSimpleNumberKeys": "off"
-          }
-        }
-      }
-    }
-  ]
+  }
 }
