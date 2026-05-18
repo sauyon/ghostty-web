@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { decode as decodePng } from 'fast-png';
 
 // Get script directory
 const __filename = fileURLToPath(import.meta.url);
@@ -250,33 +251,65 @@ async function main() {
   }
 }
 
+/** Per-channel tolerance for the pixel diff, in 8-bit units. Tuned to
+ * absorb the ~1-pixel anti-aliasing jitter we routinely see when the
+ * same canvas path is re-rasterized across different runs (different
+ * GPUs, headless-Chrome versions, OSes) while still catching real
+ * geometric regressions. */
+const PIXEL_DIFF_TOLERANCE = 2;
+
 /**
- * Calculate approximate difference percentage between two PNG buffers.
- * This is a simple comparison - for production you might want pixelmatch.
+ * Pixel-level visual diff between two PNG buffers.
+ *
+ * Both PNGs are decoded to raw RGBA via fast-png (already a project
+ * dependency — no extra `pixelmatch`/`pngjs` install needed), then
+ * compared pixel-by-pixel. A pixel counts as different if any RGBA
+ * channel differs by more than PIXEL_DIFF_TOLERANCE. The percentage
+ * returned is `(differing pixels / total pixels) * 100`.
+ *
+ * The previous implementation compared raw PNG byte buffers — that
+ * was flaky because PNG metadata, compression-level changes, and
+ * chunk reordering all produce different byte streams from visually
+ * identical images, and the byte-count delta has no relationship to
+ * the visual delta.
+ *
+ * A dimension mismatch is reported as 100% diff: the baseline and
+ * the current render disagree on canvas size, which is by definition
+ * a regression. (Returning a partial-pixel score would just hide
+ * the real problem.)
  */
 function calculateDiffPercent(buf1: Buffer, buf2: Buffer): number {
-  // Simple approach: compare decoded pixel data
-  // For a more accurate comparison, use a library like pixelmatch
+  const a = decodePng(buf1);
+  const b = decodePng(buf2);
 
-  // Quick heuristic based on buffer size difference and content
-  const sizeDiff = Math.abs(buf1.length - buf2.length);
-  const maxSize = Math.max(buf1.length, buf2.length);
+  if (a.width !== b.width || a.height !== b.height) return 100;
 
-  if (sizeDiff > 0) {
-    // Different sizes means different images
-    return (sizeDiff / maxSize) * 100;
-  }
+  // fast-png returns Uint8Array for 8-bit channels. Both should have
+  // the same channel layout (4 = RGBA, 3 = RGB) since they were
+  // rendered from the same source canvas, but we still index by
+  // pixel rather than by raw offset to stay robust to a layout
+  // mismatch in the (highly unusual) case where one side is RGB and
+  // the other is RGBA.
+  const channels = Math.min(a.channels, b.channels);
+  const aStride = a.channels;
+  const bStride = b.channels;
+  const totalPixels = a.width * a.height;
 
-  // Compare bytes
-  let diffBytes = 0;
-  const minLen = Math.min(buf1.length, buf2.length);
-  for (let i = 0; i < minLen; i++) {
-    if (buf1[i] !== buf2[i]) {
-      diffBytes++;
+  let diffPixels = 0;
+  for (let i = 0; i < totalPixels; i++) {
+    const ai = i * aStride;
+    const bi = i * bStride;
+    for (let c = 0; c < channels; c++) {
+      if (
+        Math.abs((a.data[ai + c] as number) - (b.data[bi + c] as number)) > PIXEL_DIFF_TOLERANCE
+      ) {
+        diffPixels++;
+        break;
+      }
     }
   }
 
-  return (diffBytes / maxSize) * 100;
+  return (diffPixels / totalPixels) * 100;
 }
 
 main().catch((e) => {

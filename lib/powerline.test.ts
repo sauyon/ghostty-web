@@ -14,153 +14,8 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { type RecordingOp, makeRecordingCtx } from './canvas-recorder';
 import { drawPowerline, isPowerline } from './powerline';
-
-type Op =
-  | { kind: 'fillStyle'; v: string }
-  | { kind: 'strokeStyle'; v: string }
-  | { kind: 'lineWidth'; v: number }
-  | { kind: 'lineCap'; v: string }
-  | { kind: 'lineJoin'; v: string }
-  | { kind: 'globalAlpha'; v: number }
-  | { kind: 'fillRect'; x: number; y: number; w: number; h: number }
-  | { kind: 'save' }
-  | { kind: 'restore' }
-  | { kind: 'beginPath' }
-  | { kind: 'closePath' }
-  | { kind: 'moveTo'; x: number; y: number }
-  | { kind: 'lineTo'; x: number; y: number }
-  | {
-      kind: 'bezierCurveTo';
-      cp1x: number;
-      cp1y: number;
-      cp2x: number;
-      cp2y: number;
-      x: number;
-      y: number;
-    }
-  | { kind: 'fill' }
-  | { kind: 'stroke' }
-  | { kind: 'clip' }
-  | { kind: 'translate'; x: number; y: number }
-  | { kind: 'scale'; x: number; y: number };
-
-interface RecordingCtx {
-  ops: Op[];
-  fillStyle: string;
-  strokeStyle: string;
-  lineWidth: number;
-  lineCap: string;
-  lineJoin: string;
-  globalAlpha: number;
-  fillRect(x: number, y: number, w: number, h: number): void;
-  save(): void;
-  restore(): void;
-  beginPath(): void;
-  closePath(): void;
-  moveTo(x: number, y: number): void;
-  lineTo(x: number, y: number): void;
-  bezierCurveTo(cp1x: number, cp1y: number, cp2x: number, cp2y: number, x: number, y: number): void;
-  fill(): void;
-  stroke(): void;
-  clip(): void;
-  translate(x: number, y: number): void;
-  scale(x: number, y: number): void;
-}
-
-function makeCtx(): RecordingCtx {
-  const ops: Op[] = [];
-  let fillStyleBacking = '#000';
-  let strokeStyleBacking = '#000';
-  let lineWidthBacking = 1;
-  let lineCapBacking = 'butt';
-  let lineJoinBacking = 'miter';
-  let globalAlphaBacking = 1;
-  return {
-    ops,
-    get fillStyle() {
-      return fillStyleBacking;
-    },
-    set fillStyle(v: string) {
-      fillStyleBacking = v;
-      ops.push({ kind: 'fillStyle', v });
-    },
-    get strokeStyle() {
-      return strokeStyleBacking;
-    },
-    set strokeStyle(v: string) {
-      strokeStyleBacking = v;
-      ops.push({ kind: 'strokeStyle', v });
-    },
-    get lineWidth() {
-      return lineWidthBacking;
-    },
-    set lineWidth(v: number) {
-      lineWidthBacking = v;
-      ops.push({ kind: 'lineWidth', v });
-    },
-    get lineCap() {
-      return lineCapBacking;
-    },
-    set lineCap(v: string) {
-      lineCapBacking = v;
-      ops.push({ kind: 'lineCap', v });
-    },
-    get lineJoin() {
-      return lineJoinBacking;
-    },
-    set lineJoin(v: string) {
-      lineJoinBacking = v;
-      ops.push({ kind: 'lineJoin', v });
-    },
-    get globalAlpha() {
-      return globalAlphaBacking;
-    },
-    set globalAlpha(v: number) {
-      globalAlphaBacking = v;
-      ops.push({ kind: 'globalAlpha', v });
-    },
-    fillRect(x, y, w, h) {
-      ops.push({ kind: 'fillRect', x, y, w, h });
-    },
-    save() {
-      ops.push({ kind: 'save' });
-    },
-    restore() {
-      ops.push({ kind: 'restore' });
-    },
-    beginPath() {
-      ops.push({ kind: 'beginPath' });
-    },
-    closePath() {
-      ops.push({ kind: 'closePath' });
-    },
-    moveTo(x, y) {
-      ops.push({ kind: 'moveTo', x, y });
-    },
-    lineTo(x, y) {
-      ops.push({ kind: 'lineTo', x, y });
-    },
-    bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y) {
-      ops.push({ kind: 'bezierCurveTo', cp1x, cp1y, cp2x, cp2y, x, y });
-    },
-    fill() {
-      ops.push({ kind: 'fill' });
-    },
-    stroke() {
-      ops.push({ kind: 'stroke' });
-    },
-    clip() {
-      ops.push({ kind: 'clip' });
-    },
-    translate(x, y) {
-      ops.push({ kind: 'translate', x, y });
-    },
-    scale(x, y) {
-      ops.push({ kind: 'scale', x, y });
-    },
-  };
-}
 
 // Standard cell for tests: 10×20 (tall and narrow, typical of a
 // terminal) with a 1px light stroke.
@@ -170,17 +25,8 @@ const LT = 1;
 const COLOR = '#fff';
 
 function draw(cp: number, w = CW, h = CH, lightPx = LT) {
-  const ctx = makeCtx();
-  const handled = drawPowerline(
-    ctx as unknown as CanvasRenderingContext2D,
-    cp,
-    0,
-    0,
-    w,
-    h,
-    COLOR,
-    lightPx
-  );
+  const ctx = makeRecordingCtx();
+  const handled = drawPowerline(ctx, cp, 0, 0, w, h, COLOR, lightPx);
   return { ctx, handled };
 }
 
@@ -194,7 +40,7 @@ const SUPPORTED: number[] = [...Array.from({ length: 16 }, (_, i) => 0xe0b0 + i)
  * fillStyle/strokeStyle before dispatching, so the envelope rarely
  * sits at index 0.
  */
-function mirrorIndex(ops: Op[]): number {
+function mirrorIndex(ops: RecordingOp[]): number {
   for (let i = 0; i < ops.length - 2; i++) {
     const a = ops[i];
     const b = ops[i + 1];
@@ -363,7 +209,7 @@ describe('drawPowerline structure', () => {
     // Top-right Bezier: ends at (r, r) = (10, 10) with control points
     // (r*K, 0) and (r, r - r*K). K = (sqrt(2)-1) * 4/3.
     const K = (Math.SQRT2 - 1) * (4 / 3);
-    const b0 = beziers[0] as Extract<Op, { kind: 'bezierCurveTo' }>;
+    const b0 = beziers[0] as Extract<RecordingOp, { kind: 'bezierCurveTo' }>;
     expect(b0.cp1x).toBeCloseTo(10 * K, 10);
     expect(b0.cp1y).toBe(0);
     expect(b0.cp2x).toBe(10);
@@ -477,7 +323,7 @@ describe('drawPowerline structure', () => {
 // ----------------------------------------------------------------------------
 
 describe('mirror pairs', () => {
-  function stripMirrorEnvelope(ops: Op[]): Op[] {
+  function stripMirrorEnvelope(ops: RecordingOp[]): RecordingOp[] {
     const i = mirrorIndex(ops);
     if (i < 0) return ops;
     if (ops[ops.length - 1].kind !== 'restore') return ops;

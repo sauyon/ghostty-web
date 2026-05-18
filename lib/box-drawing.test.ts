@@ -14,123 +14,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { drawBoxOrBlock, isBoxOrBlock } from './box-drawing';
-
-type Op =
-  | { kind: 'fillStyle'; v: string }
-  | { kind: 'strokeStyle'; v: string }
-  | { kind: 'lineWidth'; v: number }
-  | { kind: 'lineCap'; v: string }
-  | { kind: 'globalAlpha'; v: number }
-  | { kind: 'fillRect'; x: number; y: number; w: number; h: number }
-  | { kind: 'save' }
-  | { kind: 'restore' }
-  | { kind: 'beginPath' }
-  | { kind: 'moveTo'; x: number; y: number }
-  | { kind: 'lineTo'; x: number; y: number }
-  | {
-      kind: 'bezierCurveTo';
-      cp1x: number;
-      cp1y: number;
-      cp2x: number;
-      cp2y: number;
-      x: number;
-      y: number;
-    }
-  | { kind: 'stroke' }
-  | { kind: 'translate'; x: number; y: number };
-
-interface RecordingCtx {
-  ops: Op[];
-  // Mirrored from CanvasRenderingContext2D for type compat.
-  fillStyle: string;
-  strokeStyle: string;
-  lineWidth: number;
-  lineCap: string;
-  globalAlpha: number;
-  fillRect(x: number, y: number, w: number, h: number): void;
-  save(): void;
-  restore(): void;
-  beginPath(): void;
-  moveTo(x: number, y: number): void;
-  lineTo(x: number, y: number): void;
-  bezierCurveTo(cp1x: number, cp1y: number, cp2x: number, cp2y: number, x: number, y: number): void;
-  stroke(): void;
-  translate(x: number, y: number): void;
-}
-
-function makeCtx(): RecordingCtx {
-  const ops: Op[] = [];
-  let fillStyleBacking = '#000';
-  let strokeStyleBacking = '#000';
-  let lineWidthBacking = 1;
-  let lineCapBacking = 'butt';
-  let globalAlphaBacking = 1;
-  return {
-    ops,
-    get fillStyle() {
-      return fillStyleBacking;
-    },
-    set fillStyle(v: string) {
-      fillStyleBacking = v;
-      ops.push({ kind: 'fillStyle', v });
-    },
-    get strokeStyle() {
-      return strokeStyleBacking;
-    },
-    set strokeStyle(v: string) {
-      strokeStyleBacking = v;
-      ops.push({ kind: 'strokeStyle', v });
-    },
-    get lineWidth() {
-      return lineWidthBacking;
-    },
-    set lineWidth(v: number) {
-      lineWidthBacking = v;
-      ops.push({ kind: 'lineWidth', v });
-    },
-    get lineCap() {
-      return lineCapBacking;
-    },
-    set lineCap(v: string) {
-      lineCapBacking = v;
-      ops.push({ kind: 'lineCap', v });
-    },
-    get globalAlpha() {
-      return globalAlphaBacking;
-    },
-    set globalAlpha(v: number) {
-      globalAlphaBacking = v;
-      ops.push({ kind: 'globalAlpha', v });
-    },
-    fillRect(x, y, w, h) {
-      ops.push({ kind: 'fillRect', x, y, w, h });
-    },
-    save() {
-      ops.push({ kind: 'save' });
-    },
-    restore() {
-      ops.push({ kind: 'restore' });
-    },
-    beginPath() {
-      ops.push({ kind: 'beginPath' });
-    },
-    moveTo(x, y) {
-      ops.push({ kind: 'moveTo', x, y });
-    },
-    lineTo(x, y) {
-      ops.push({ kind: 'lineTo', x, y });
-    },
-    bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y) {
-      ops.push({ kind: 'bezierCurveTo', cp1x, cp1y, cp2x, cp2y, x, y });
-    },
-    stroke() {
-      ops.push({ kind: 'stroke' });
-    },
-    translate(x, y) {
-      ops.push({ kind: 'translate', x, y });
-    },
-  };
-}
+import { type RecordingOp, makeRecordingCtx } from './canvas-recorder';
 
 // Standard cell for tests: 10x20 with a 1px light stroke.
 const CW = 10;
@@ -139,21 +23,12 @@ const LT = 1;
 const COLOR = '#fff';
 
 function draw(cp: number, lightPx = LT) {
-  const ctx = makeCtx();
-  const handled = drawBoxOrBlock(
-    ctx as unknown as CanvasRenderingContext2D,
-    cp,
-    0,
-    0,
-    CW,
-    CH,
-    COLOR,
-    lightPx
-  );
+  const ctx = makeRecordingCtx();
+  const handled = drawBoxOrBlock(ctx, cp, 0, 0, CW, CH, COLOR, lightPx);
   return { ctx, handled };
 }
 
-function rectsOnly(ops: Op[]): { x: number; y: number; w: number; h: number }[] {
+function rectsOnly(ops: RecordingOp[]): { x: number; y: number; w: number; h: number }[] {
   return ops.flatMap((o) => (o.kind === 'fillRect' ? [{ x: o.x, y: o.y, w: o.w, h: o.h }] : []));
 }
 
@@ -486,9 +361,9 @@ describe('box-drawing', () => {
       // back to a LIGHT line regardless of dash weight (vlineMiddle/
       // hlineMiddle take .light), so a heavy dash at a tiny cell size
       // shouldn't suddenly turn into a heavy bar.
-      const ctx = makeCtx();
+      const ctx = makeRecordingCtx();
       drawBoxOrBlock(
-        ctx as unknown as CanvasRenderingContext2D,
+        ctx,
         0x2505, // ━━━ heavy triple dash
         0,
         0,
