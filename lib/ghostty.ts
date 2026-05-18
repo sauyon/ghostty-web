@@ -1056,6 +1056,7 @@ export class GhosttyTerminal {
   }
 
   free(): void {
+    if (!this.handle) return;
     if (this.callbackRegistry) {
       this.callbackRegistry.instancesByHandle.delete(this.handle);
     }
@@ -1072,6 +1073,7 @@ export class GhosttyTerminal {
       this.renderHandle = 0;
     }
     this.exports.ghostty_terminal_free(this.handle);
+    this.handle = 0;
   }
 
   // ==========================================================================
