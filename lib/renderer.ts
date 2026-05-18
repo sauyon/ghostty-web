@@ -13,6 +13,7 @@
 import { drawBoxOrBlock, isBoxOrBlock } from './box-drawing';
 import type { ITheme } from './interfaces';
 import { KITTY_PLACEHOLDER, diacriticToInt } from './kitty_diacritics';
+import { drawPowerline, isPowerline } from './powerline';
 import type { SelectionManager } from './selection-manager';
 import type { GhosttyCell, ILink, KittyImagePixels, KittyPlacementInfo } from './types';
 import { CellFlags, KittyImageFormat } from './types';
@@ -20,7 +21,18 @@ import { CellFlags, KittyImageFormat } from './types';
 // Interface for objects that can be rendered
 export interface IRenderable {
   getLine(y: number): GhosttyCell[] | null;
-  getCursor(): { x: number; y: number; visible: boolean };
+  getCursor(): {
+    x: number;
+    y: number;
+    visible: boolean;
+    /**
+     * Optional per-cursor style override. When set, takes precedence over
+     * the renderer-level default. Mainly used by mock buffers in tests
+     * (e.g. demo/render-test.html) so a single test page can exercise
+     * all three cursor styles without mutating renderer state.
+     */
+    style?: 'block' | 'underline' | 'bar';
+  };
   getDimensions(): { cols: number; rows: number };
   isRowDirty(y: number): boolean;
   /** Returns true if a full redraw is needed (e.g., screen change) */
@@ -60,7 +72,15 @@ export interface IScrollbackProvider {
 export interface RendererOptions {
   fontSize?: number; // Default: 15
   fontFamily?: string; // Default: 'monospace'
-  cursorStyle?: 'block' | 'underline' | 'bar'; // Default: 'block'
+  /**
+   * Default cursor shape. Matches Ghostty native's `cursor-style` config:
+   * a running program can override this for the rest of the session via
+   * `CSI Ps SP q` (DECSCUSR), and the renderer respects that. This
+   * option is the fallback used when the buffer's reported cursor
+   * style is absent (which happens for test fakes and any non-WASM
+   * IRenderable). Default: 'block'.
+   */
+  cursorStyle?: 'block' | 'underline' | 'bar';
   cursorBlink?: boolean; // Default: false
   theme?: ITheme;
   devicePixelRatio?: number; // Default: window.devicePixelRatio
@@ -711,7 +731,7 @@ export class CanvasRenderer {
 
     // Render cursor (only if we're at the bottom, not scrolled)
     if (viewportY === 0 && cursor.visible && this.cursorVisible) {
-      this.renderCursor(cursor.x, cursor.y);
+      this.renderCursor(cursor.x, cursor.y, cursor.style);
     }
 
     // Render scrollbar if scrolled or scrollback exists (with opacity for fade effect)
@@ -895,15 +915,30 @@ export class CanvasRenderer {
     //     proportions the font designer gave U+2502 etc.
     // This is the standard approach in modern terminal renderers
     // (Alacritty, kitty, wezterm, Ghostty native).
-    const isSimpleBoxOrBlock =
-      cell.grapheme_len === 0 && cell.codepoint > 0 && isBoxOrBlock(cell.codepoint);
+    const isSimple = cell.grapheme_len === 0 && cell.codepoint > 0;
     // boxThickness is optional in the public FontMetrics type for
     // backward compat, but the built-in measureFont always sets it.
     // Fall back to a font-size-derived value as a safety net.
     const boxThickness = this.metrics.boxThickness ?? Math.max(1, Math.round(this.fontSize * 0.07));
     if (
-      isSimpleBoxOrBlock &&
+      isSimple &&
+      isBoxOrBlock(cell.codepoint) &&
       drawBoxOrBlock(
+        this.ctx,
+        cell.codepoint,
+        cellX,
+        cellY,
+        cellWidth,
+        this.metrics.height,
+        this.ctx.fillStyle as string,
+        boxThickness
+      )
+    ) {
+      // Drawn directly; skip the font path.
+    } else if (
+      isSimple &&
+      isPowerline(cell.codepoint) &&
+      drawPowerline(
         this.ctx,
         cell.codepoint,
         cellX,
@@ -1398,15 +1433,18 @@ export class CanvasRenderer {
   }
 
   /**
-   * Render cursor
+   * Render cursor. `styleOverride` lets a buffer pick a style per-frame
+   * (mainly for tests); when omitted, falls back to the renderer's
+   * configured `cursorStyle`.
    */
-  private renderCursor(x: number, y: number): void {
+  private renderCursor(x: number, y: number, styleOverride?: 'block' | 'underline' | 'bar'): void {
     const cursorX = x * this.metrics.width;
     const cursorY = y * this.metrics.height;
+    const style = styleOverride ?? this.cursorStyle;
 
     this.ctx.fillStyle = this.theme.cursor;
 
-    switch (this.cursorStyle) {
+    switch (style) {
       case 'block':
         // Full cell block
         this.ctx.fillRect(cursorX, cursorY, this.metrics.width, this.metrics.height);
