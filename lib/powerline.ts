@@ -118,9 +118,10 @@ export function drawPowerline(
       return true;
 
     case 0xe0b3: // left-pointing angle, thin divider (mirror of E0B1)
-      withMirror(ctx, x, w, true, () => {
-        strokeChevron(ctx, x, y, x + w, y + h / 2, x, y + h, px);
-      });
+      ctx.save();
+      mirrorAroundCellCenter(ctx, x, w);
+      strokeChevron(ctx, x, y, x + w, y + h / 2, x, y + h, px);
+      ctx.restore();
       return true;
 
     // ----- Semicircle caps (stadium-shaped, not true ellipses) --------------
@@ -278,11 +279,16 @@ function fillStadium(
   h: number,
   mirror: boolean
 ): void {
-  withMirror(ctx, x, w, mirror, () => {
-    stadiumPath(ctx, x, y, w, h);
-    ctx.closePath();
-    ctx.fill();
-  });
+  if (mirror) {
+    ctx.save();
+    mirrorAroundCellCenter(ctx, x, w);
+  }
+  stadiumPath(ctx, x, y, w, h);
+  ctx.closePath();
+  ctx.fill();
+  if (mirror) {
+    ctx.restore();
+  }
 }
 
 /**
@@ -301,23 +307,28 @@ function innerStrokeStadium(
   lineWidth: number,
   mirror: boolean
 ): void {
-  withMirror(ctx, x, w, mirror, () => {
+  if (mirror) {
     ctx.save();
-    // Build the filled-shape clip first. closePath implicitly draws
-    // the left edge back to the start.
-    stadiumPath(ctx, x, y, w, h);
-    ctx.closePath();
-    ctx.clip();
+    mirrorAroundCellCenter(ctx, x, w);
+  }
+  ctx.save();
+  // Build the filled-shape clip first. closePath implicitly draws
+  // the left edge back to the start.
+  stadiumPath(ctx, x, y, w, h);
+  ctx.closePath();
+  ctx.clip();
 
-    // Re-issue the stadium outline (without the implicit close) and
-    // stroke double-wide; the half outside the clip is discarded.
-    stadiumPath(ctx, x, y, w, h);
-    ctx.lineWidth = lineWidth * 2;
-    ctx.lineCap = 'butt';
-    ctx.lineJoin = 'miter';
-    ctx.stroke();
+  // Re-issue the stadium outline (without the implicit close) and
+  // stroke double-wide; the half outside the clip is discarded.
+  stadiumPath(ctx, x, y, w, h);
+  ctx.lineWidth = lineWidth * 2;
+  ctx.lineCap = 'butt';
+  ctx.lineJoin = 'miter';
+  ctx.stroke();
+  ctx.restore();
+  if (mirror) {
     ctx.restore();
-  });
+  }
 }
 
 /**
@@ -337,54 +348,52 @@ function fillBisector(
   lightPx: number,
   mirror: boolean
 ): void {
-  withMirror(ctx, x, w, mirror, () => {
-    const halfGap = lightPx / 2;
-    const midTop = y + h / 2 - halfGap;
-    const midBot = y + h / 2 + halfGap;
+  if (mirror) {
+    ctx.save();
+    mirrorAroundCellCenter(ctx, x, w);
+  }
+  const halfGap = lightPx / 2;
+  const midTop = y + h / 2 - halfGap;
+  const midBot = y + h / 2 + halfGap;
 
-    // Top piece: trapezoid (0,0) → (w,0) → (w/2, mid-) → (0, mid-)
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineTo(x + w, y);
-    ctx.lineTo(x + w / 2, midTop);
-    ctx.lineTo(x, midTop);
-    ctx.closePath();
-    ctx.fill();
+  // Top piece: trapezoid (0,0) → (w,0) → (w/2, mid-) → (0, mid-)
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + w, y);
+  ctx.lineTo(x + w / 2, midTop);
+  ctx.lineTo(x, midTop);
+  ctx.closePath();
+  ctx.fill();
 
-    // Bottom piece: trapezoid (0,h) → (w,h) → (w/2, mid+) → (0, mid+)
-    ctx.beginPath();
-    ctx.moveTo(x, y + h);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x + w / 2, midBot);
-    ctx.lineTo(x, midBot);
-    ctx.closePath();
-    ctx.fill();
-  });
+  // Bottom piece: trapezoid (0,h) → (w,h) → (w/2, mid+) → (0, mid+)
+  ctx.beginPath();
+  ctx.moveTo(x, y + h);
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x + w / 2, midBot);
+  ctx.lineTo(x, midBot);
+  ctx.closePath();
+  ctx.fill();
+
+  if (mirror) {
+    ctx.restore();
+  }
 }
 
 /**
- * Run `draw` either as-is or with the canvas reflected horizontally
- * around the cell's vertical centerline (x + w/2). Used to derive
- * E0B3 from E0B1, E0B6/E0B7 from E0B4/E0B5, and E0D4 from E0D2 —
- * the same pattern Ghostty's powerline.zig uses with flipHorizontal.
+ * Reflect the canvas around the cell's vertical centerline (x + w/2).
+ * Caller is responsible for `ctx.save()` before calling and
+ * `ctx.restore()` after the drawing that should be mirrored — keeping
+ * those out of this helper avoids allocating a closure for every
+ * drawn cell, which matters on the render hot path.
+ *
+ * After this transform a point `(px, py)` in user code lands at
+ * `(2*(x + w/2) - px, py) = (2x + w - px, py)` on screen.
+ *
+ * Used to derive E0B3 from E0B1, E0B6/E0B7 from E0B4/E0B5, and E0D4
+ * from E0D2 — the same pattern Ghostty's powerline.zig uses via
+ * `canvas.flipHorizontal()`.
  */
-function withMirror(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  w: number,
-  mirror: boolean,
-  draw: () => void
-): void {
-  if (!mirror) {
-    draw();
-    return;
-  }
-  ctx.save();
-  // After this transform a point (px, py) in user code lands at
-  // (2*(x + w/2) - px, py) = (2x + w - px, py) on screen, which
-  // mirrors the [x, x+w] cell around its vertical centerline.
+function mirrorAroundCellCenter(ctx: CanvasRenderingContext2D, x: number, w: number): void {
   ctx.translate(2 * x + w, 0);
   ctx.scale(-1, 1);
-  draw();
-  ctx.restore();
 }
