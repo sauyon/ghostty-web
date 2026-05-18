@@ -125,10 +125,7 @@ export class SelectionManager {
     renderer: CanvasRenderer,
     wasmTerm: GhosttyTerminal,
     textarea: HTMLTextAreaElement,
-    onLongPressActivation?: (
-      col: number,
-      absoluteRow: number
-    ) => Promise<boolean> | boolean
+    onLongPressActivation?: (col: number, absoluteRow: number) => Promise<boolean> | boolean
   ) {
     this.terminal = terminal;
     this.renderer = renderer;

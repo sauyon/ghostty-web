@@ -808,7 +808,7 @@ export class CanvasRenderer {
     // we cannot infer it from the RGB triple because (0,0,0) is a valid
     // explicit color (programs emit it for "true black" backgrounds, e.g.
     // letterboxed image renderings).
-    const useThemeBg = (cell.flags & CellFlags.INVERSE) ? cell.fgIsDefault : cell.bgIsDefault;
+    const useThemeBg = cell.flags & CellFlags.INVERSE ? cell.fgIsDefault : cell.bgIsDefault;
     if (!useThemeBg) {
       this.ctx.fillStyle = this.rgbToCSS(bg_r, bg_g, bg_b);
       this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
@@ -873,7 +873,7 @@ export class CanvasRenderer {
       // Same reasoning as the bg path: only fall back to theme.foreground
       // when the cell has the default fg (tag NONE), not when its explicit
       // RGB happens to be (0,0,0).
-      const useThemeFg = (cell.flags & CellFlags.INVERSE) ? cell.bgIsDefault : cell.fgIsDefault;
+      const useThemeFg = cell.flags & CellFlags.INVERSE ? cell.bgIsDefault : cell.fgIsDefault;
       this.ctx.fillStyle = useThemeFg ? this.theme.foreground : this.rgbToCSS(fg_r, fg_g, fg_b);
     }
 
@@ -1213,8 +1213,7 @@ export class CanvasRenderer {
     if (quads & QUAD_UL) this.ctx.fillRect(cellX, cellY, halfW, halfH);
     if (quads & QUAD_UR) this.ctx.fillRect(cellX + halfW, cellY, w - halfW, halfH);
     if (quads & QUAD_LL) this.ctx.fillRect(cellX, cellY + halfH, halfW, h - halfH);
-    if (quads & QUAD_LR)
-      this.ctx.fillRect(cellX + halfW, cellY + halfH, w - halfW, h - halfH);
+    if (quads & QUAD_LR) this.ctx.fillRect(cellX + halfW, cellY + halfH, w - halfW, h - halfH);
     return true;
   }
 

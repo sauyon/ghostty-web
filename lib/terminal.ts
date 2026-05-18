@@ -573,7 +573,6 @@ export class Terminal implements ITerminalCore {
       // row iterator immediately after open() and rely on the second
       // update() / clearDirty pair to settle WASM state.
       this.renderTick();
-
     } catch (error) {
       // Clean up on error
       this.isOpen = false;
