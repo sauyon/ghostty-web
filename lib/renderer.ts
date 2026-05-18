@@ -115,6 +115,25 @@ export const DEFAULT_THEME: Required<ITheme> = {
   brightWhite: '#ffffff',
 };
 
+// Quadrant block elements ▖▗▘▙▚▛▜▝▞▟ at U+2596..U+259F.
+// Bitmap of which corners (UL, UR, LL, LR) are filled per codepoint.
+const QUAD_UL = 0b1000;
+const QUAD_UR = 0b0100;
+const QUAD_LL = 0b0010;
+const QUAD_LR = 0b0001;
+const QUAD_MAP = new Map<number, number>([
+  [0x2596, QUAD_LL],
+  [0x2597, QUAD_LR],
+  [0x2598, QUAD_UL],
+  [0x2599, QUAD_UL | QUAD_LL | QUAD_LR],
+  [0x259a, QUAD_UL | QUAD_LR],
+  [0x259b, QUAD_UL | QUAD_UR | QUAD_LL],
+  [0x259c, QUAD_UL | QUAD_UR | QUAD_LR],
+  [0x259d, QUAD_UR],
+  [0x259e, QUAD_UR | QUAD_LL],
+  [0x259f, QUAD_UR | QUAD_LL | QUAD_LR],
+]);
+
 // ============================================================================
 // CanvasRenderer Class
 // ============================================================================
@@ -1188,25 +1207,7 @@ export class CanvasRenderer {
       return true;
     }
 
-    // Quadrants ▖▗▘▙▚▛▜▝▞▟ at U+2596..U+259F. Bitmap of which corners
-    // (UL, UR, LL, LR) are filled per codepoint.
-    const QUAD_UL = 0b1000;
-    const QUAD_UR = 0b0100;
-    const QUAD_LL = 0b0010;
-    const QUAD_LR = 0b0001;
-    const quadMap: Record<number, number> = {
-      0x2596: QUAD_LL,
-      0x2597: QUAD_LR,
-      0x2598: QUAD_UL,
-      0x2599: QUAD_UL | QUAD_LL | QUAD_LR,
-      0x259a: QUAD_UL | QUAD_LR,
-      0x259b: QUAD_UL | QUAD_UR | QUAD_LL,
-      0x259c: QUAD_UL | QUAD_UR | QUAD_LR,
-      0x259d: QUAD_UR,
-      0x259e: QUAD_UR | QUAD_LL,
-      0x259f: QUAD_UR | QUAD_LL | QUAD_LR,
-    };
-    const quads = quadMap[codepoint];
+    const quads = QUAD_MAP.get(codepoint);
     if (quads === undefined) return false;
     const halfW = Math.round(w / 2);
     const halfH = Math.round(h / 2);
