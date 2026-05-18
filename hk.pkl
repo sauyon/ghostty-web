@@ -4,7 +4,7 @@ import "package://github.com/jdx/hk/releases/download/v1.45.0/hk@1.45.0#/Builtin
 local linters = new Mapping<String, Step> {
     ["prettier"] = Builtins.prettier
     ["biome"] = Builtins.biome
-    ["tsc"] = (Builtins.tsc) { profiles = List("slow") }
+    ["tsc"] = Builtins.tsc
 }
 
 hooks {
