@@ -17,8 +17,12 @@
  * value typed as the real Canvas2D context plus an `ops` field they
  * can inspect.
  *
- * Not exported from `lib/index.ts`. Vite/tsc exclude `*.test.ts` so
- * this module's only callers are excluded from the published bundle.
+ * Kept out of the published package on two fronts:
+ *   - JS: this file isn't reachable from `lib/index.ts`, so Rollup
+ *     tree-shakes it out of `dist/ghostty-web.js`.
+ *   - Types: vite-plugin-dts's `exclude` in `vite.config.js` lists
+ *     this file by name (the `*.test.ts` wildcard alone wouldn't
+ *     catch it), so its declarations stay out of `ghostty-web.d.ts`.
  */
 
 /**

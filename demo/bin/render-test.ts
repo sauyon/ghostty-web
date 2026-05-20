@@ -273,35 +273,33 @@ const PIXEL_DIFF_TOLERANCE = 2;
  * identical images, and the byte-count delta has no relationship to
  * the visual delta.
  *
- * A dimension mismatch is reported as 100% diff: the baseline and
- * the current render disagree on canvas size, which is by definition
- * a regression. (Returning a partial-pixel score would just hide
- * the real problem.)
+ * A dimension OR channel-layout mismatch is reported as 100% diff:
+ * the baseline and the current render disagree on the fundamental
+ * shape of the data (canvas size, or RGB vs RGBA), which is by
+ * definition a regression. (Returning a partial-pixel score would
+ * just hide the real problem.)
  */
 function calculateDiffPercent(buf1: Buffer, buf2: Buffer): number {
   const a = decodePng(buf1);
   const b = decodePng(buf2);
 
-  if (a.width !== b.width || a.height !== b.height) return 100;
+  // Treat any size or channel-layout disagreement as a full regression.
+  // Canvas2D `toDataURL('image/png')` always produces RGBA, so an RGB
+  // baseline against an RGBA current means the baseline was created
+  // outside the normal pipeline — comparing only the shared channels
+  // would silently ignore alpha, and an opaque-vs-transparent pair
+  // would then falsely match.
+  if (a.width !== b.width || a.height !== b.height || a.channels !== b.channels) return 100;
 
-  // fast-png returns Uint8Array for 8-bit channels. Both should have
-  // the same channel layout (4 = RGBA, 3 = RGB) since they were
-  // rendered from the same source canvas, but we still index by
-  // pixel rather than by raw offset to stay robust to a layout
-  // mismatch in the (highly unusual) case where one side is RGB and
-  // the other is RGBA.
-  const channels = Math.min(a.channels, b.channels);
-  const aStride = a.channels;
-  const bStride = b.channels;
+  const channels = a.channels;
   const totalPixels = a.width * a.height;
 
   let diffPixels = 0;
   for (let i = 0; i < totalPixels; i++) {
-    const ai = i * aStride;
-    const bi = i * bStride;
+    const base = i * channels;
     for (let c = 0; c < channels; c++) {
       if (
-        Math.abs((a.data[ai + c] as number) - (b.data[bi + c] as number)) > PIXEL_DIFF_TOLERANCE
+        Math.abs((a.data[base + c] as number) - (b.data[base + c] as number)) > PIXEL_DIFF_TOLERANCE
       ) {
         diffPixels++;
         break;
