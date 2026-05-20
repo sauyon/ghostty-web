@@ -9,7 +9,11 @@ export default defineConfig({
   plugins: [
     dts({
       include: ['lib/**/*.ts'],
-      exclude: ['lib/**/*.test.ts'],
+      // Test files are caught by the *.test.ts glob; canvas-recorder.ts
+      // is a test-only helper that *.test.ts wildcards don't match, so
+      // exclude it explicitly to keep its internal types out of the
+      // rolled-up ghostty-web.d.ts shipped to consumers.
+      exclude: ['lib/**/*.test.ts', 'lib/canvas-recorder.ts'],
       rollupTypes: true, // Bundle all .d.ts into single file
       copyDtsFiles: false, // Don't copy individual .d.ts files
     }),
