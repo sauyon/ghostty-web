@@ -298,9 +298,7 @@ function calculateDiffPercent(buf1: Buffer, buf2: Buffer): number {
   for (let i = 0; i < totalPixels; i++) {
     const base = i * channels;
     for (let c = 0; c < channels; c++) {
-      if (
-        Math.abs((a.data[base + c] as number) - (b.data[base + c] as number)) > PIXEL_DIFF_TOLERANCE
-      ) {
+      if (Math.abs(a.data[base + c] - b.data[base + c]) > PIXEL_DIFF_TOLERANCE) {
         diffPixels++;
         break;
       }
