@@ -36,8 +36,8 @@ export type RecordingOp =
   | { kind: 'fillStyle'; v: string }
   | { kind: 'strokeStyle'; v: string }
   | { kind: 'lineWidth'; v: number }
-  | { kind: 'lineCap'; v: string }
-  | { kind: 'lineJoin'; v: string }
+  | { kind: 'lineCap'; v: CanvasLineCap }
+  | { kind: 'lineJoin'; v: CanvasLineJoin }
   | { kind: 'globalAlpha'; v: number }
   // Rectangles.
   | { kind: 'fillRect'; x: number; y: number; w: number; h: number }
@@ -90,8 +90,8 @@ export function makeRecordingCtx(): RecordingCanvas {
   let fillStyleBacking = '#000';
   let strokeStyleBacking = '#000';
   let lineWidthBacking = 1;
-  let lineCapBacking = 'butt';
-  let lineJoinBacking = 'miter';
+  let lineCapBacking: CanvasLineCap = 'butt';
+  let lineJoinBacking: CanvasLineJoin = 'miter';
   let globalAlphaBacking = 1;
 
   const recorder = {
@@ -120,14 +120,14 @@ export function makeRecordingCtx(): RecordingCanvas {
     get lineCap() {
       return lineCapBacking;
     },
-    set lineCap(v: string) {
+    set lineCap(v: CanvasLineCap) {
       lineCapBacking = v;
       ops.push({ kind: 'lineCap', v });
     },
     get lineJoin() {
       return lineJoinBacking;
     },
-    set lineJoin(v: string) {
+    set lineJoin(v: CanvasLineJoin) {
       lineJoinBacking = v;
       ops.push({ kind: 'lineJoin', v });
     },
